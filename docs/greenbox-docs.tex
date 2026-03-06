@@ -1,0 +1,368 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=25mm, footskip=15mm]{geometry}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{floatpag}
+\usepackage{hyperref}
+
+\title{\textbf{GreenBox} \\ System Documentation}
+\author{
+  Kolomiiets Ivan
+  \and Plaster Desir\'{e}e Maria
+  \and Fokuhl Robin-Niklas
+  \and Kuca Rino
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+%% ---------------------------------------------------------------
+\section{Global Sequence Overview}
+
+This diagram shows the high-level lifecycle of a GreenBox device: power-on,
+WiFi and MQTT broker configuration (Phase~1), device registration (Phase~2),
+configuration protocol (Phase~3), watering event reporting (Phase~4), and user
+data viewing (Phase~5). Each phase is documented in detail in a separate
+diagram. See Figure~\ref{fig:global-sequence}.
+
+%% ---------------------------------------------------------------
+\section{System Architecture}
+
+The GreenBox system follows a decoupled, broker-mediated architecture
+(see Figure~\ref{fig:component}). The ESP32 device communicates exclusively
+through an MQTT broker rather than directly with the application server. This
+design was chosen for several reasons:
+
+\begin{itemize}
+  \item \textbf{Low overhead} --- MQTT's minimal packet format is well-suited
+        for the ESP32's constrained memory and processing power. An HTTP-based
+        approach would require maintaining a full TCP connection per request
+        with significantly larger headers.
+  \item \textbf{Persistent connection} --- a single MQTT session handles
+        registration, configuration, and event reporting. The keep-alive
+        mechanism (60\,s) detects disconnections faster than periodic HTTP
+        polling.
+  \item \textbf{Broker decoupling} --- the device and server are independent
+        subscribers. The server can be restarted, scaled, or replaced without
+        affecting connected devices. The broker queues messages during server
+        downtime (with QoS~1 and persistent sessions).
+  \item \textbf{Retained messages} --- MQTT's retain flag enables offline
+        configuration delivery. When a device reconnects, it immediately
+        receives the latest config without the server needing to know the
+        device came online.
+\end{itemize}
+
+PostgreSQL was selected as the data store for the following reasons:
+\begin{itemize}
+  \item \textbf{Performance} --- advanced query planner, JSONB indexing, and
+        BIGSERIAL primary keys handle unbounded time-series growth efficiently.
+  \item \textbf{Open source} --- no licensing costs, large community, and
+        transparent development.
+  \item \textbf{High reliability and availability} --- ACID compliance,
+        write-ahead logging, and mature replication support ensure data
+        integrity even under unexpected failures.
+  \item \textbf{Fully-featured DB and DBMS} --- native JSONB type allows
+        storing the watering schedule (a variable-length array of
+        time/duration pairs) without a separate join table, alongside
+        constraints, triggers, and rich SQL support.
+  \item \textbf{Cloud suitability} --- unlike embedded databases such as
+        SQLite, PostgreSQL operates as a standalone server process, supporting
+        concurrent access from multiple application instances, connection
+        pooling, and managed cloud deployments (e.g.\ AWS RDS, GCP Cloud SQL).
+\end{itemize}
+
+The ESP32 runs a local web server (HTTP, port~80) solely for initial
+provisioning. This server is active only during Phase~1 --- before the device
+has internet connectivity --- and is destroyed once WiFi credentials are
+confirmed.
+
+%% ---------------------------------------------------------------
+\section{Database Schema}
+
+The database uses three tables (see Figure~\ref{fig:er}):
+
+\begin{itemize}
+  \item \textbf{devices} --- one row per registered GreenBox. Populated during
+        Phase~2 registration.
+  \item \textbf{device\_configs} --- one row per configuration push, per port.
+        This table is append-only: each new configuration creates a new row
+        rather than overwriting the previous one, preserving a full audit trail
+        of configuration changes. The \texttt{status} column tracks the
+        lifecycle: \texttt{pending} (saved in DB) $\to$ \texttt{pushed}
+        (published to MQTT) $\to$ \texttt{applied} or \texttt{rejected}
+        (device acknowledgment received).
+  \item \textbf{watering\_events} --- one row per pump start/stop event.
+        Uses BIGSERIAL because event volume grows linearly with time and number
+        of devices.
+\end{itemize}
+
+Configuration is stored per-port rather than as a monolithic device config.
+Each GreenBox has two independent watering ports, and the user may update
+one port's schedule without affecting the other. Using separate rows (rather
+than two sets of columns in the \texttt{devices} table) also makes the schema
+extensible if future hardware revisions add more ports.
+
+The \texttt{watering\_schedule} column uses JSONB to store an array of
+\texttt{\{time, duration\_s\}} objects. For an MVP this avoids the complexity
+of a separate \texttt{schedule\_entries} table and join queries, while JSONB
+operators still allow server-side filtering and validation.
+
+%% ---------------------------------------------------------------
+\section{MQTT Interface Definitions}
+
+All MQTT messages follow a consistent topic naming convention
+(see Figure~\ref{fig:mqtt-interfaces}):
+
+\begin{center}
+\texttt{greenbox/\{device\_id\}/\{domain\}/\{action\}}
+\end{center}
+
+\noindent where \texttt{domain} is one of \texttt{reg}, \texttt{config}, or
+\texttt{event}, and \texttt{action} specifies the direction or type.
+
+\textbf{QoS~1 (at-least-once)} is used throughout. Exactly-once (QoS~2) was
+not chosen because it doubles the handshake overhead and the system already
+handles duplicates: registration uses server-side upsert logic, configuration
+uses the \texttt{config\_id} for idempotent application, and watering events
+are idempotent inserts (duplicate timestamps on the same port are discarded).
+
+The \texttt{retain} flag is set to \texttt{true} only on
+\texttt{config/push}. This ensures that a device which was offline when the
+user changed its configuration will receive the latest config immediately upon
+reconnecting and re-subscribing. Watering events use \texttt{retain = false}
+because they are time-series data: retaining only the most recent event would
+be misleading, as the full history matters for analysis.
+
+Every configuration and event message includes a \texttt{port} field (1 or 2)
+to address the correct pump. This explicit port addressing keeps the topic
+structure flat (one topic per message type) rather than embedding the port
+number in the topic path, which would complicate wildcard subscriptions on the
+server side.
+
+%% ---------------------------------------------------------------
+\section{Phase 1: WiFi + MQTT Broker Configuration}
+
+The user connects to the GreenBox hotspot, opens the on-device web interface,
+and provides WiFi credentials (SSID, password) along with the MQTT broker
+settings (host, port). All parameters are persisted in NVS (Non-Volatile
+Storage). The device attempts to connect to the specified WiFi network.
+Overheat protection runs in parallel, entering hibernate mode if needed.
+See Figure~\ref{fig:phase1}.
+
+%% ---------------------------------------------------------------
+\section{Phase 2: Device Registration via MQTT}
+
+After WiFi connectivity is established, the ESP32 registers itself with the
+server through the MQTT broker (MQTT~5.0, plain TCP, port~1883 --- MVP, no TLS). The
+registration follows an exponential backoff retry loop (up to 10~attempts).
+Five network failure scenarios are handled, each with a distinct LED~2
+indication pattern (DNS failure implicitly covers WiFi loss).
+See Figure~\ref{fig:phase2}.
+
+%% ---------------------------------------------------------------
+\section{Phase 3: Configuration Protocol}
+
+Once registered, the device subscribes to its configuration topic and awaits
+instructions from the server (see Figure~\ref{fig:phase3}).
+
+The configuration flow is initiated by the user through the web dashboard, not
+by the device. The user selects a port (1 or 2), defines the watering
+schedule (one or more daily times with durations), and sets the humidity
+threshold. The web frontend sends a POST request to the server, which
+validates the input, stores it in \texttt{device\_configs} with
+\texttt{status = pending}, and publishes it to the MQTT broker with
+\texttt{retain = true}.
+
+Retained messages are central to this design. If the device is online, it
+receives the config immediately. If it is offline (powered down, WiFi lost),
+the broker stores the retained message and delivers it the moment the device
+reconnects and re-subscribes. This eliminates the need for the server to track
+device online/offline state or implement a push-retry mechanism.
+
+Each configuration carries a unique \texttt{config\_id}. The device stores the
+last applied \texttt{config\_id} per port in NVS. When the same
+\texttt{config\_id} arrives again --- due to QoS~1 redelivery or the retained
+message on reconnect --- the device re-sends the acknowledgment but does not
+re-apply the configuration. This provides idempotency without requiring
+exactly-once delivery.
+
+The device validates all fields locally (schedule times parseable,
+\texttt{humidity\_threshold\_pct} within 0--100, durations positive) before
+applying. A rejected configuration triggers a brief orange LED indication
+(3\,s) and an acknowledgment with \texttt{status = rejected} and a
+\texttt{reason} string, allowing the server to surface the error to the user.
+
+Watering schedule times are specified in UTC. The web frontend is responsible
+for converting between the user's local timezone and UTC before sending the
+POST request. The ESP32 does not carry a timezone database; it synchronizes
+its clock from the \texttt{server\_time} field received during registration.
+
+Configuration is stored in NVS keyed by port number, ensuring it survives
+device reboots without requiring a re-push from the server.
+
+%% ---------------------------------------------------------------
+\section{Phase 4: Watering Event Reporting}
+
+The GreenBox reports every pump activation and deactivation as a watering
+event (see Figure~\ref{fig:phase4}).
+
+Two triggers can start a watering cycle:
+
+\begin{enumerate}
+  \item \textbf{Schedule trigger} --- a FreeRTOS timer fires at a configured
+        UTC time. The device reads the humidity sensor, activates the
+        pump GPIO for the target port, and runs for the configured duration.
+  \item \textbf{Humidity trigger} --- a periodic humidity check (every few
+        seconds) detects that the reading has dropped below the configured
+        threshold. The device activates the pump and runs for the configured
+        duration (same as a schedule-triggered cycle).
+\end{enumerate}
+
+Events are published immediately upon pump start and stop --- they are not
+batched or deferred. This is deliberate: watering start/stop times are
+critical for real-time monitoring and alerting. A user watching the dashboard
+should see the pump status change within seconds, not at the next reporting
+interval.
+
+The \texttt{stop\_reason} field in the stop event enables post-hoc analysis of
+watering behavior: \texttt{duration\_complete} indicates a normal cycle
+(schedule or humidity triggered), and \texttt{error} indicates a pump fault or
+sensor failure.
+
+The server subscribes to \texttt{greenbox/+/event/watering} using a wildcard,
+which scales to any number of devices without per-device subscription
+management.
+
+%% ---------------------------------------------------------------
+\section{Phase 5: User Data Viewing}
+
+The web frontend provides a read-only dashboard for monitoring device status,
+watering history, and configuration (see Figure~\ref{fig:phase5}).
+
+The REST API is the sole interface between the web frontend and the application
+server. The frontend never communicates with the MQTT broker directly. This
+separation of concerns means the frontend can be a static SPA served from a
+CDN, and the MQTT infrastructure remains an internal implementation detail.
+
+Watering history queries accept \texttt{port}, \texttt{from}, \texttt{to}, and
+\texttt{limit} parameters, enabling time-windowed pagination. This avoids
+loading unbounded result sets: a device running two watering cycles per day per
+port generates approximately 1,460 event pairs per year.
+
+The configuration update endpoint (\texttt{POST /api/devices/\{device\_id\}/config})
+returns immediately with \texttt{status = pushed}, not \texttt{applied}. The
+actual application happens asynchronously through the Phase~3 MQTT flow. The
+frontend can poll the config status endpoint to check whether the device has
+acknowledged the new configuration.
+
+Each device dashboard presents separate panels for port~1 and port~2,
+reflecting the independent configuration and event history of each watering
+zone.
+
+%% ---------------------------------------------------------------
+\section{LED State Diagram}
+
+The GreenBox uses two RGB LEDs for visual status indication
+(see Figure~\ref{fig:led-states}):
+
+\begin{itemize}
+  \item \textbf{LED~1 (Network Status)} --- indicates WiFi connectivity state.
+  \item \textbf{LED~2 (Application Status)} --- indicates registration
+        progress, configuration activity, watering status, overheat
+        protection, and general operational state.
+\end{itemize}
+
+%% ===============================================================
+\appendix
+\newpage
+\section{Diagrams}
+
+\begin{figure}[ht]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/global-sequence.png}
+  \caption{GreenBox global sequence --- top-level orchestration.}
+  \label{fig:global-sequence}
+\end{figure}
+
+\newgeometry{margin=10mm, bottom=20mm, footskip=15mm}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/component-diagram.png}
+  \caption{System component diagram --- architecture overview.}
+  \label{fig:component}
+\end{figure}
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/er-diagram.png}
+  \caption{Entity relationship diagram --- full database schema.}
+  \label{fig:er}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/mqtt-interfaces.png}
+  \caption{MQTT message interface definitions.}
+  \label{fig:mqtt-interfaces}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase1-wifi-setup.png}
+  \caption{Phase~1 --- WiFi and MQTT broker configuration sequence.}
+  \label{fig:phase1}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase2-mqtt-registration.png}
+  \caption{Phase~2 --- MQTT registration sequence.}
+  \label{fig:phase2}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase3-config-protocol.png}
+  \caption{Phase~3 --- Configuration protocol sequence.}
+  \label{fig:phase3}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase4-watering-events.png}
+  \caption{Phase~4 --- Watering event reporting sequence.}
+  \label{fig:phase4}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase5-user-data-viewing.png}
+  \caption{Phase~5 --- User data viewing sequence.}
+  \label{fig:phase5}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/led-states.png}
+  \caption{RGB LED state diagram --- LED~1 (Network) and LED~2 (Application).}
+  \label{fig:led-states}
+\end{figure}
+
+\restoregeometry
+
+\end{document}

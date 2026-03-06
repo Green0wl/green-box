@@ -1,0 +1,256 @@
+@startuml
+
+title Phase 3: Configuration Protocol
+
+actor USER
+
+box "ESP32 BOX"
+participant ESP32
+participant "MQTT Publisher" as MQTTPUB
+end box
+
+participant "MQTT Broker" as MQTTBROKER
+participant Server
+participant "PostgreSQL" as DB
+participant WEB
+
+== 3.1 Subscribe to Config Topic ==
+
+activate ESP32
+activate MQTTPUB
+
+note over ESP32
+  Phase 2 complete.
+  MQTT session is open.
+  LED 1 = green_steady
+  LED 2 = green_steady
+end note
+
+MQTTPUB -> MQTTBROKER ++: **SUBSCRIBE**\n\
+|_ packet_id = 10\n\
+|_ topic     = "greenbox/{device_id}/config/push"\n\
+|_ QoS       = 1 (at least once)
+
+MQTTBROKER -->> MQTTPUB --: **SUBACK**\n\
+|_ packet_id   = 10\n\
+|_ reason_code = 0x01 (granted QoS 1)
+
+opt Retained config message exists on broker
+  MQTTBROKER -> MQTTBROKER ++
+  MQTTBROKER ->> MQTTPUB --: **PUBLISH** (retained)\n\
+|_ topic   = "greenbox/{device_id}/config/push"\n\
+|_ QoS     = 1\n\
+|_ retain  = true\n\
+|_ payload = { (last pushed config) }
+
+  MQTTPUB ->> ESP32: Config message from retained store
+
+  note right of ESP32
+    If the device was offline when
+    a config was pushed, the retained
+    message delivers it immediately
+    upon subscription.
+  end note
+
+  ref over ESP32, MQTTBROKER : Apply config — see step 3.4 below
+end
+
+== 3.2 User Configures Port via WEB ==
+
+USER -> USER ++
+
+USER -> WEB ++: Open device dashboard\nGET /devices/{device_id}
+note right of USER
+  Bruteforce vulnerability occurs here,
+  but this is acceptable for MVP.
+end note
+WEB -->> USER --: Dashboard page with\nport 1 and port 2 config panels
+
+USER -> WEB ++: Select **Port 1**\nSet watering schedule:\n  06:00 for 120s\n  18:30 for 90s\nSet humidity threshold: 35%\nClick **Save**
+
+WEB -> Server ++: **POST** /api/devices/{device_id}/config\n\
+|_ Content-Type: application/json\n\
+|_ body = {\n\
+|_   "port": 1,\n\
+|_   "watering_schedule": [\n\
+|_     {"time": "06:00", "duration_s": 120},\n\
+|_     {"time": "18:30", "duration_s": 90}\n\
+|_   ],\n\
+|_   "humidity_threshold_pct": 35\n\
+|_ }
+
+== 3.3 Server Stores and Pushes Config ==
+
+Server -> Server: Validate input:\n\
+|_ port IN (1, 2)\n\
+|_ schedule times parseable (HH:MM)\n\
+|_ duration_s > 0\n\
+|_ humidity_threshold_pct 0..100
+
+Server -> DB ++: INSERT INTO device_configs (\n\
+|_  device_id, config_id, port,\n\
+|_  watering_schedule,\n\
+|_  humidity_threshold_pct,\n\
+|_  status, created_at\n\
+) VALUES (\n\
+|_ 'GB-XXXXXXXXXXXX',\n\
+|_ 'cfg-20260305-001',\n\
+|_ 1,\n\
+|_ '[{"time":"06:00","duration_s":120},\n\
+|_   {"time":"18:30","duration_s":90}]',\n\
+|_ 35,\n\
+|_ 'pending',\n\
+|_ NOW()\n\
+)
+DB -->> Server --: INSERT OK
+
+Server -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/config/push"\n\
+|_ QoS     = 1\n\
+|_ retain  = **true**\n\
+|_ payload = {\n\
+|_   "config_id": "cfg-20260305-001",\n\
+|_   "timestamp": "2026-03-05T14:30:00Z",\n\
+|_   "port": 1,\n\
+|_   "watering_schedule": [\n\
+|_     {"time": "06:00", "duration_s": 120},\n\
+|_     {"time": "18:30", "duration_s": 90}\n\
+|_   ],\n\
+|_   "humidity_threshold_pct": 35\n\
+|_ }
+
+MQTTBROKER -->> Server: **PUBACK**
+
+Server -> DB ++: UPDATE device_configs\nSET status = 'pushed',\n    pushed_at = NOW()\nWHERE config_id = 'cfg-20260305-001'
+DB -->> Server --: UPDATE OK
+
+Server -->> WEB: **HTTP 201 Created**\n\
+|_ body = {\n\
+|_   "config_id": "cfg-20260305-001",\n\
+|_   "port": 1,\n\
+|_   "status": "pushed",\n\
+|_   "created_at": "2026-03-05T14:30:00Z"\n\
+|_ }
+
+deactivate Server
+WEB -->> USER --: Config saved.\nStatus: Pushed (awaiting device ack)
+
+== 3.4 ESP32 Receives and Applies Config ==
+
+MQTTBROKER -> MQTTPUB: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/config/push"\n\
+|_ QoS     = 1\n\
+|_ payload = { ... config for port 1 ... }
+
+MQTTPUB -->> MQTTBROKER: **PUBACK**
+deactivate MQTTBROKER
+MQTTPUB ->> ESP32 --: Deliver config payload
+
+ESP32 -> ESP32 ++: led(2, blue_blink)\nParsing and applying config...
+ESP32 -->> ESP32 --
+
+ESP32 -> ESP32 ++: Parse JSON payload\nExtract port, schedule, threshold
+ESP32 -->> ESP32 --
+
+alt Config valid
+  ESP32 -> ESP32 ++: Read config_id from NVS\nfor this port
+  ESP32 -->> ESP32 --
+
+  alt New config_id (not a duplicate)
+    ESP32 -> ESP32 ++: Store in NVS:\n\
+|_ key = "config_port_1"\n\
+|_ watering_schedule\n\
+|_ humidity_threshold_pct\n\
+|_ config_id
+    ESP32 -->> ESP32 --
+
+    ESP32 -> ESP32 ++: Reconfigure port 1 timers:\n\
+|_ Schedule timer → 06:00, 18:30\n\
+|_ Humidity check interval
+    ESP32 -->> ESP32 --
+
+    ESP32 -> ESP32 ++: set led(2, green_steady)\nConfig applied
+    ESP32 -->> ESP32 --
+
+  else Same config_id (duplicate — QoS 1 redelivery or retained)
+    note right of ESP32
+      Idempotent: same config_id
+      already applied. Re-send ack
+      but do not re-apply config.
+    end note
+    ESP32 -> ESP32 ++: set led(2, green_steady)
+    ESP32 -->> ESP32 --
+  end
+
+  == 3.5 Config Acknowledgment (applied) ==
+  
+  ESP32 ->> MQTTPUB ++
+  MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/config/ack"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "config_id": "cfg-20260305-001",\n\
+|_   "status": "applied",\n\
+|_   "timestamp": "2026-03-05T14:30:02Z",\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 1\n\
+|_ }
+
+  MQTTBROKER -->> MQTTPUB --: **PUBACK**
+  deactivate MQTTPUB
+
+else Config invalid (validation failed)
+  ESP32 -> ESP32 ++: set led(2, orange_steady)
+  ESP32 -->> ESP32 --
+
+  ESP32 ->> MQTTPUB ++
+  MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/config/ack"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "config_id": "cfg-20260305-001",\n\
+|_   "status": "rejected",\n\
+|_   "reason": "humidity_threshold_pct out of range",\n\
+|_   "timestamp": "2026-03-05T14:30:02Z",\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 1\n\
+|_ }
+
+  MQTTBROKER -->> MQTTPUB: **PUBACK**
+  deactivate MQTTPUB
+
+  ESP32 -> ESP32 ++: Wait 10s
+  ESP32 -->> ESP32 --
+  ESP32 -> ESP32 ++: set led(2, green_steady)
+  ESP32 -->> ESP32 --
+end
+
+== 3.6 Server Processes Acknowledgment ==
+
+MQTTBROKER -> Server ++: Deliver ack message from\n"greenbox/{device_id}/config/ack"
+deactivate MQTTBROKER
+
+Server -> DB ++: UPDATE device_configs SET\n\
+|_ status = 'applied',\n\
+|_ acked_at = NOW()\n\
+WHERE config_id = 'cfg-20260305-001'
+DB -->> Server --: UPDATE OK
+
+Server -> DB ++: UPDATE devices SET\nlast_seen_at = NOW()\nWHERE device_id = 'GB-XXXXXXXXXXXX'
+DB -->> Server --: UPDATE OK
+
+deactivate Server
+
+note over WEB, Server
+  WEB can poll
+  GET /api/devices/{device_id}/config?port=1
+  to see updated status = "applied".
+end note
+
+deactivate USER
+deactivate MQTTPUB
+deactivate ESP32
+
+@enduml

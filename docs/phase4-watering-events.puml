@@ -1,0 +1,186 @@
+@startuml
+
+title Phase 4: Watering Event Reporting
+
+box "ESP32 BOX"
+participant ESP32
+participant "MQTT Publisher" as MQTTPUB
+end box
+
+participant "MQTT Broker" as MQTTBROKER
+participant Server
+participant "PostgreSQL" as DB
+
+note over ESP32
+  Phase 3 complete.
+  Config applied for port(s).
+  MQTT session is open.
+  LED 1 = green_steady
+  LED 2 = green_steady
+end note
+
+activate ESP32
+activate MQTTPUB
+
+par
+  == 4.1 Schedule-Triggered Watering ==
+
+  note over ESP32
+    Internal FreeRTOS timer fires
+    at the scheduled time (e.g., 06:00 UTC)
+    for **port 1**.
+  end note
+
+  ESP32 -> ESP32 ++: Timer fired for port 1\nScheduled time: 06:00\nPlanned duration: 120s
+  ESP32 -->> ESP32 --
+
+  ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 38.2
+  ESP32 -->> ESP32 --
+
+  ESP32 -> ESP32 ++: led(2, cyan_blink)\nActivate pump 1 GPIO (HIGH)
+  ESP32 -->> ESP32 --
+
+  MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/event/watering"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 1,\n\
+|_   "event": "watering_started",\n\
+|_   "timestamp": "2026-03-05T06:00:00Z",\n\
+|_   "trigger": "schedule",\n\
+|_   "scheduled_time": "06:00",\n\
+|_   "humidity_at_start_pct": 38.2,\n\
+|_   "planned_duration_s": 120\n\
+|_ }
+
+  MQTTBROKER -->> MQTTPUB --: **PUBACK**
+
+  ESP32 -> ESP32 ++: Wait 120s (pump running)...
+  ESP32 -->> ESP32 --
+
+  ESP32 -> ESP32 ++: Deactivate pump 1 GPIO (LOW)
+  ESP32 -->> ESP32 --
+
+  ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 55.7
+  ESP32 -->> ESP32 --
+
+  ESP32 -> ESP32 ++: led(2, green_steady)\nPump 1 stopped
+  ESP32 -->> ESP32 --
+
+  MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/event/watering"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 1,\n\
+|_   "event": "watering_stopped",\n\
+|_   "timestamp": "2026-03-05T06:02:00Z",\n\
+|_   "trigger": "schedule",\n\
+|_   "actual_duration_s": 120,\n\
+|_   "humidity_at_stop_pct": 55.7,\n\
+|_   "stop_reason": "duration_complete"\n\
+|_ }
+
+  MQTTBROKER -->> MQTTPUB --: **PUBACK**
+
+else
+  == 4.2 Humidity-Triggered Watering ==
+
+  loop every 1 minute
+    ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 28.4
+    ESP32 -->> ESP32 --
+
+    opt humidity_pct < humidity_threshold_pct (e.g., 28.4 < 40)
+      ESP32 -> ESP32 ++: led(2, cyan_blink)\nActivate pump 2 GPIO (HIGH)\nHumidity below threshold — auto-water
+      ESP32 -->> ESP32 --
+
+      MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/event/watering"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 2,\n\
+|_   "event": "watering_started",\n\
+|_   "timestamp": "2026-03-05T10:15:00Z",\n\
+|_   "trigger": "humidity",\n\
+|_   "humidity_at_start_pct": 28.4,\n\
+|_   "planned_duration_s": 90\n\
+|_ }
+
+      MQTTBROKER -->> MQTTPUB --: **PUBACK**
+
+      ESP32 -> ESP32 ++: Wait 90s (pump running)...
+      ESP32 -->> ESP32 --
+
+      ESP32 -> ESP32 ++: Deactivate pump 2 GPIO (LOW)
+      ESP32 -->> ESP32 --
+
+      ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 41.2
+      ESP32 -->> ESP32 --
+
+      ESP32 -> ESP32 ++: led(2, green_steady)\nPump 2 stopped
+      ESP32 -->> ESP32 --
+
+      MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_ topic   = "greenbox/{device_id}/event/watering"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 2,\n\
+|_   "event": "watering_stopped",\n\
+|_   "timestamp": "2026-03-05T10:16:30Z",\n\
+|_   "trigger": "humidity",\n\
+|_   "actual_duration_s": 90,\n\
+|_   "humidity_at_stop_pct": 41.2,\n\
+|_   "stop_reason": "duration_complete"\n\
+|_ }
+
+      MQTTBROKER -->> MQTTPUB --: **PUBACK**
+    end
+  end
+end
+
+== 4.3 Server-side Event Processing ==
+
+note over MQTTBROKER, Server
+  Server is subscribed to:
+  **greenbox/+/event/watering** (wildcard)
+  Processes each incoming event message.
+end note
+
+MQTTBROKER -> MQTTBROKER ++
+MQTTBROKER -> Server ++: Deliver watering event message
+deactivate MQTTBROKER
+
+Server -> DB ++: INSERT INTO watering_events (\n\
+|_ device_id, port, event_type,\n\
+|_ device_timestamp, received_at,\n\
+|_ trigger, scheduled_time,\n\
+|_ humidity_at_start_pct,\n\
+|_ humidity_at_stop_pct,\n\
+|_ planned_duration_s,\n\
+|_ actual_duration_s,\n\
+|_ stop_reason\n\
+) VALUES (\n\
+|_ 'GB-XXXXXXXXXXXX', 1,\n\
+|_ 'watering_started',\n\
+|_ '2026-03-05T06:00:00Z', NOW(),\n\
+|_ 'schedule', '06:00',\n\
+|_ 38.2, NULL, 120, NULL, NULL\n\
+)
+DB -->> Server --: INSERT OK
+
+Server -> DB ++: UPDATE devices SET\nlast_seen_at = NOW()\nWHERE device_id = 'GB-XXXXXXXXXXXX'
+DB -->> Server --: UPDATE OK
+
+deactivate Server
+
+deactivate MQTTPUB
+deactivate ESP32
+
+@enduml

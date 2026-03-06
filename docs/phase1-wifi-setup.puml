@@ -1,0 +1,70 @@
+@startuml
+
+title Phase 1: WiFi + MQTT Broker Configuration
+
+actor USER
+
+box "ESP32 BOX"
+participant ESP32
+participant "MQTT Publisher" as MQTTPUB
+participant "ESP32 WEB" as ESPWEB
+end box
+
+participant "MQTT Broker" as MQTTBROKER
+participant Server
+participant "PostgreSQL" as DB
+participant WEB
+entity "Global WiFi" as GWIFI
+
+activate USER
+activate ESP32
+note over ESP32: WLAN process is still running
+ESP32 -> ESP32 ++
+
+par
+  loop until break
+    opt not hibernate state
+      USER ->> ESPWEB ++: set_global(SSID, PWD)
+      USER ->> ESPWEB: set_mqtt(BROKER_HOST, BROKER_PORT)
+      USER ->> ESPWEB: click(try_connect)
+      ESPWEB ->> ESP32: Transmit WiFi credentials\nand MQTT broker settings
+      ESP32 -> ESP32 ++: Store SSID, PWD, BROKER_HOST,\nBROKER_PORT in NVS\n(Non-Volatile Storage)
+      ESP32 -->> ESP32 --
+      ESP32 -> GWIFI ++: Connect with WiFi\ncredentials provided
+      GWIFI -->> ESP32 --: Response with reason
+      alt correct SSID and PWD
+        break
+          ESP32 -->> ESP32 --: led(1, green_steady)
+          ESP32 ->> ESPWEB: OK
+          ESPWEB ->> USER: OK
+        end
+      else
+        ESP32 -> ESP32 ++: led(1, red_blinking)
+        ESP32 ->> ESPWEB: Response with reason
+        ESPWEB ->> USER --: Response with reason
+      end
+    end
+    break
+      ESP32 -->> ESP32 --: Deactivate hotspot\nand destroy WLAN.
+    end
+  else
+    loop until break
+      opt overhitted
+        ESP32 ->> ESPWEB ++: Overhitted
+        ESPWEB ->> USER --: Response with overhitted reason
+        ESP32 -> ESP32 ++: Enter hibernate state\nand led(2, purple_steady)
+        loop until normal operation temperature
+          opt normal operation temperature
+            break
+              ESP32 -->> ESP32 --: Leave hibernate state\nand led(2, off)
+            end
+          end
+        end
+      end
+    end
+  end
+end loop
+
+note over ESP32: This state is reached\nalready connected to WAN
+
+@enduml

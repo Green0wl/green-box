@@ -1,0 +1,45 @@
+@startuml
+
+actor USER
+
+box "ESP32 BOX"
+participant ESP32
+participant "MQTT Publisher" as MQTTPUB
+participant "ESP32 WEB" as ESPWEB
+end box
+
+participant "MQTT Broker" as MQTTBROKER
+participant Server
+participant "PostgreSQL" as DB
+participant WEB
+
+activate USER
+
+USER ->> ESP32 ++: Power ON
+USER ->> ESP32: Click and hold (5s) RES button for reset.
+ESP32 -> ESP32 ++: 0. Instantiate WLAN\n\
+1. Activate hotspot\n\
+2. Set SSID to the one printed on box\n\
+3. Set password to the one printed on box.
+
+note over ESP32: WLAN credentials are on the box
+USER ->> ESP32: Connect to local WLAN (for configuration)
+USER -> ESPWEB ++: GET on http://IP:80 on the box.
+ESPWEB -->> USER: OK 200 /index.html
+
+ref over USER, ESPWEB : **Phase 1: WiFi + MQTT Broker Configuration**\nSee **phase1-wifi-setup.puml**
+ESP32 -->> ESP32 --
+
+note over ESP32: GreenBox is now connected\nto the global internet.
+
+deactivate USER
+
+ref over ESP32, DB : **Phase 2: Device Registration via MQTT**\nSee **phase2-mqtt-registration.puml**
+
+ref over USER, WEB : **Phase 3: Configuration Protocol**\nSee **phase3-config-protocol.puml**
+
+ref over ESP32, DB : **Phase 4: Watering Event Reporting**\nSee **phase4-watering-events.puml**
+
+ref over USER, WEB : **Phase 5: User Data Viewing**\nSee **phase5-user-data-viewing.puml**
+
+@enduml

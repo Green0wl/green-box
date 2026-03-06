@@ -1,0 +1,116 @@
+@startuml
+
+title GreenBox — MQTT Message Interface Definitions
+
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #333333
+}
+
+skinparam package {
+  BackgroundColor #FFFFFF
+}
+
+package "Registration — Phase 2" <<Rectangle>> #E8F5E9 {
+
+  interface "RegistrationRequest" as RegReq {
+    **topic**: greenbox/{device_id}/reg/request
+    **QoS**: 1 | **retain**: false
+    --
+    ! device_id : string
+    ! mac_address : string
+    ! firmware_version : string
+    ! hardware_revision : string
+    ! uptime_ms : integer
+  }
+
+  interface "RegistrationResponse" as RegResp {
+    **topic**: greenbox/{device_id}/reg/response
+    **QoS**: 1 | **retain**: false
+    --
+    ! status : "registered" | "already_registered" | "rejected"
+    ! message : string
+    ! server_time : ISO 8601
+    ! config : ConfigBlock
+  }
+
+  class "ConfigBlock" as CfgBlock {
+    ! telemetry_interval_s : integer
+    ! ota_check_interval_s : integer
+  }
+
+  RegResp --> CfgBlock
+}
+
+package "Configuration — Phase 3" <<Rectangle>> #E3F2FD {
+
+  interface "ConfigPush" as CfgPush {
+    **topic**: greenbox/{device_id}/config/push
+    **QoS**: 1 | **retain**: **true**
+    --
+    ! config_id : string
+    ! timestamp : ISO 8601
+    ! port : 1 | 2
+    ! watering_schedule : WateringSlot[]
+    ! humidity_threshold_pct : 0–100
+  }
+
+  interface "ConfigAck" as CfgAck {
+    **topic**: greenbox/{device_id}/config/ack
+    **QoS**: 1 | **retain**: false
+    --
+    ! config_id : string
+    ! status : "applied" | "rejected"
+    ! timestamp : ISO 8601
+    ! device_id : string
+    ! port : 1 | 2
+    ? reason : string
+  }
+
+  class "WateringSlot" as WSlot {
+    ! time : HH:MM, UTC
+    ! duration_s : integer
+  }
+
+  CfgPush --> WSlot
+}
+
+package "Watering Events — Phase 4" <<Rectangle>> #FFF3E0 {
+
+  interface "WateringEvent" as WEvt {
+    **topic**: greenbox/{device_id}/event/watering
+    **QoS**: 1 | **retain**: false
+    --
+    ! device_id : string
+    ! port : 1 | 2
+    ! event : "watering_started" | "watering_stopped"
+    ! timestamp : ISO 8601
+    ! trigger : "schedule" | "humidity"
+    ? scheduled_time : HH:MM
+    ? humidity_at_start_pct : float
+    ? humidity_at_stop_pct : float
+    ? planned_duration_s : integer
+    ? actual_duration_s : integer
+    ? stop_reason : "duration_complete" | "error"
+  }
+}
+
+note bottom of CfgPush
+  **retain = true** ensures the device
+  receives the latest config when it
+  reconnects after being offline.
+end note
+
+note bottom of WEvt
+  **retain = false** — events are
+  time-series data; only the latest
+  retained value would be misleading.
+end note
+
+legend right
+  **Legend**
+  ! required field
+  ? optional field
+endlegend
+
+@enduml

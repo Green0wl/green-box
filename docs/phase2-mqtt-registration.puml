@@ -1,0 +1,212 @@
+@startuml
+
+title Phase 2: Device Registration via MQTT
+
+box "ESP32 BOX"
+participant ESP32
+participant "MQTT Publisher" as MQTTPUB
+end box
+
+participant "MQTT Broker" as MQTTBROKER
+participant Server
+participant "PostgreSQL" as DB
+
+== Phase 2: Device Registration via MQTT ==
+activate ESP32
+
+loop Registration retry loop\n(attempt 1..10, exponential backoff:\n1s, 2s, 4s, 8s, 16s, 32s, 60s, 60s, 60s, 60s)
+  ESP32 -> ESP32 ++: Begin MQTT registration process\n\
+|_set led(2, yellow_blinking)\n\
+|_Load BROKER_HOST and BROKER_PORT from NVS
+  ESP32 -->> ESP32 --
+
+  loop until break
+    == 2.1 DNS Resolution ==
+
+    ESP32 -> ESP32 ++: gethostbyname(BROKER_HOST)
+
+    break DNS resolution failed (timeout or NXDOMAIN)
+      ESP32 -> ESP32 ++: set led(2, red_double_blink)\n\
+|_Wait backoff interval
+      ESP32 -->> ESP32 --
+    end
+    ESP32 -->> ESP32 --
+
+    == 2.2 TCP Connection to MQTT Broker ==
+
+    ESP32 -> MQTTBROKER ++: TCP SYN at broker_ip:1883\nplain MQTT 5.0, no TLS: MVP
+    MQTTBROKER -->> ESP32 --
+
+    break TCP connection timeout (no SYN-ACK within 10s)
+      ESP32 -> ESP32 ++: set led(2, red_slow_blink)\n\
+|_Wait backoff interval
+      ESP32 -->> ESP32 --
+    end
+
+    break TCP connection refused (RST received)
+      ESP32 -> ESP32 ++: set led(2, red_slow_blink)\n\
+|_Wait backoff interval
+      ESP32 -->> ESP32 --
+    end
+
+    == 2.3 MQTT CONNECT Handshake ==
+
+    ESP32 ->> MQTTPUB ++
+
+    MQTTPUB -> MQTTBROKER ++: **CONNECT**\n\
+|_client_id       = "{device_id}"\n\
+|_username        = "{device_id}"\n\
+|_password        = "{pre_shared_key}"\n\
+|_clean_start     = true\n\
+|_keep_alive      = 60s\n\
+|_protocol_version = 5 (MQTT 5.0)
+
+    break CONNACK reason_code != 0x00 (rejected)
+      MQTTBROKER -->> MQTTPUB --: **CONNACK**\n\
+|_session_present = false\n\
+|_reason_code = 0x86 (bad credentials)\n\
+|_ or 0x87 (not authorized)
+      MQTTPUB ->> ESP32
+
+      deactivate MQTTPUB
+      ESP32 -> ESP32 ++: led(2, red_fast_blink)\n\
+|_Wait backoff interval
+      ESP32 -->> ESP32 --
+    end
+
+    MQTTBROKER -> MQTTBROKER ++
+    MQTTPUB -> MQTTPUB ++
+    MQTTBROKER -->> MQTTPUB --: **CONNACK**\n\
+|_session_present = false\n\
+|_reason_code = 0x00 (success)
+
+    == 2.4 Subscribe to Registration Response Topic ==
+
+    MQTTPUB -> MQTTBROKER ++: **SUBSCRIBE**\n\
+|_packet_id = 1\n\
+|_topic     = "greenbox/{device_id}/reg/response"\n\
+|_QoS       = 1 (at least once)
+
+    MQTTBROKER -->> MQTTPUB --: **SUBACK**\n\
+|_packet_id   = 1\n\
+|_reason_code = 0x01 (granted QoS 1)
+
+    == 2.5 Publish Registration Request ==
+
+    MQTTPUB -> MQTTBROKER ++: **PUBLISH**\n\
+|_topic   = "greenbox/{device_id}/reg/request"\n\
+|_QoS     = 1 (at least once)\n\
+|_retain  = false\n\
+|_payload = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "mac_address": "AA:BB:CC:DD:EE:FF",\n\
+|_   "firmware_version": "1.0.0",\n\
+|_   "hardware_revision": "rev3",\n\
+|_   "uptime_ms": 14832\n\
+|_ }
+
+    MQTTBROKER -->> MQTTPUB: **PUBACK**\n\
+|_packet_id = 2
+
+    == 2.6 Server-side Registration Processing ==
+
+    MQTTBROKER -> Server ++: Deliver message from topic\n"greenbox/{device_id}/reg/request"
+
+    Server -> DB ++: SELECT * FROM devices\nWHERE device_id = 'GB-XXXXXXXXXXXX'
+    DB -->> Server --: Query result (0 or 1 row)
+
+    alt Device NOT found in database (new device)
+      Server -> DB ++: INSERT INTO devices (\n\
+|_ device_id,\n\
+|_ mac_address,\n\
+|_ firmware_version,\n\
+|_ hardware_revision,\n\
+|_ status,\n\
+|_ first_seen_at,\n\
+|_ last_seen_at\n\
+  ) VALUES (\n\
+|_ 'GB-XXXXXXXXXXXX',\n\
+|_ 'AA:BB:CC:DD:EE:FF',\n\
+|_ '1.0.0',\n\
+|_ 'rev3',\n\
+|_ 'active',\n\
+|_ NOW(),\n\
+|_ NOW()\n\
+  )
+      DB -->> Server --: INSERT OK (1 row affected)
+
+      Server -> MQTTBROKER: **PUBLISH**\n\
+|_topic   = "greenbox/{device_id}/reg/response"\n\
+|_QoS     = 1\n\
+|_payload = {\n\
+|_   "status": "registered",\n\
+|_   "message": "New device registered",\n\
+|_   "server_time": "2026-03-04T12:00:00Z",\n\
+|_   "config": {\n\
+|_     "telemetry_interval_s": 30,\n\
+|_     "ota_check_interval_s": 3600\n\
+|_   }\n\
+|_ }
+
+    else Device already exists in database
+      Server -> DB ++: UPDATE devices SET\n\
+|_ firmware_version = '1.0.0',\n\
+|_ hardware_revision = 'rev3',\n\
+|_ last_seen_at = NOW()\n\
+        WHERE device_id = 'GB-XXXXXXXXXXXX'
+      DB -->> Server --: UPDATE OK (1 row affected)
+
+      Server -> MQTTBROKER: **PUBLISH**\n\
+|_topic   = "greenbox/{device_id}/reg/response"\n\
+|_QoS     = 1\n\
+|_payload = {\n\
+|_   "status": "already_registered",\n\
+|_   "message": "Device re-registered (updated)",\n\
+|_   "server_time": "2026-03-04T12:00:00Z",\n\
+|_   "config": {\n\
+|_     "telemetry_interval_s": 30,\n\
+|_     "ota_check_interval_s": 3600\n\
+|_   }\n\
+|_ }
+    end
+
+    deactivate Server
+
+    == 2.7 Handle Server Response ==
+
+    break No response within 10s timeout
+      ESP32 -> ESP32 ++: led(2, orange_blinking)\n\
+|_Wait backoff interval
+      MQTTPUB -> MQTTBROKER: **DISCONNECT**
+      deactivate MQTTPUB
+      ESP32 -->> ESP32 --: 
+    end
+
+    MQTTBROKER -> MQTTPUB ++: Deliver message from topic\n"greenbox/{device_id}/reg/response"
+    MQTTPUB -> ESP32 --: Parse registration response payload
+
+    break status = "rejected"
+      ESP32 -> ESP32 ++: led(2, red_steady)\n\
+|_Wait backoff interval
+      MQTTPUB -> MQTTBROKER: **DISCONNECT**
+      deactivate MQTTPUB
+      ESP32 -->> ESP32 --: 
+    end
+
+    ESP32 -> ESP32 ++: set led(2, green_steady)\n\
+|_Store server config into NVS\n\
+|_  (telemetry_interval,ota_check_interval)
+    ESP32 -->> ESP32 --
+
+    break Registration complete
+      ESP32 -> ESP32 ++: set registration complete
+      ESP32 -->> ESP32 --:
+    end
+  end
+  break Registration complete
+    ESP32 -> ESP32 ++: Exit loop
+    ESP32 -->> ESP32 --:
+  end
+end
+
+@enduml

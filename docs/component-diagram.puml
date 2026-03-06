@@ -1,0 +1,78 @@
+@startuml
+
+title GreenBox — System Component Diagram
+
+skinparam component {
+  BackgroundColor #F5F5F5
+  BorderColor #333333
+}
+
+skinparam node {
+  BackgroundColor #E3F2FD
+}
+
+skinparam database {
+  BackgroundColor #FFF9C4
+}
+
+skinparam cloud {
+  BackgroundColor #F3E5F5
+}
+
+package "ESP32 BOX" {
+  [ESP32 Firmware] as FW
+  [ESP32 Web Server\n(HTTP :80)] as ESPWEB
+
+  [Humidity Sensor] as SENSOR
+  [Water Pump 1\n(Port 1)] as PUMP1
+  [Water Pump 2\n(Port 2)] as PUMP2
+  [RGB LED 1\n(Network)] as LED1
+  [RGB LED 2\n(Application)] as LED2
+  [NVS Storage\n(Non-Volatile)] as NVS
+
+  FW --> SENSOR : GPIO\n(analog read)
+  FW --> PUMP1 : GPIO\n(digital out)
+  FW --> PUMP2 : GPIO\n(digital out)
+  FW --> LED1 : GPIO (PWM)
+  FW --> LED2 : GPIO (PWM)
+  FW --> NVS : Read / Write\n(WiFi creds, MQTT broker,\nconfig per port)
+  FW --> ESPWEB : Internal
+}
+
+cloud "Network" {
+  [WiFi\nAccess Point] as WIFI
+}
+
+node "Cloud Infrastructure" {
+  [MQTT Broker\n(Mosquitto)\nTCP :1883] as BROKER
+  [Application\nServer] as SERVER
+  database "PostgreSQL\nTCP :5432" as DB
+  [Web Frontend\n(SPA)] as WEB
+}
+
+actor "User" as USER
+
+FW <--> WIFI : WiFi STA\n(802.11ac)
+WIFI <--> BROKER : TCP :1883\n(plain MQTT 5.0)
+
+BROKER <--> SERVER : MQTT\npub / sub
+SERVER <--> DB : SQL queries
+WEB <--> SERVER : REST API\n(HTTPS)
+USER <--> WEB : Browser\n(HTTPS)
+USER <--> ESPWEB : Browser\n(HTTP, local network)
+
+note bottom of BROKER
+  Topics:
+  greenbox/{device_id}/reg/*
+  greenbox/{device_id}/config/*
+  greenbox/{device_id}/event/*
+end note
+
+note bottom of DB
+  Tables:
+  devices
+  device_configs
+  watering_events
+end note
+
+@enduml

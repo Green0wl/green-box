@@ -1,0 +1,191 @@
+@startuml
+
+title Phase 5: User Data Viewing
+
+actor USER
+participant WEB
+participant Server
+participant "PostgreSQL" as DB
+
+note over USER, DB
+  This phase is the  **read path** only.
+  ESP32 and MQTT Broker are not involved.
+  The user accesses a web dashboard to
+  view device status, watering history,
+  and manage configuration.
+end note
+
+activate USER
+
+== 5.1 Device List ==
+
+USER -> WEB ++: Open dashboard\nGET /
+
+WEB -> Server ++: **GET** /api/devices
+
+Server -> DB ++: SELECT\n\
+|_ device_id, status,\n\
+|_ firmware_version,\n\
+|_ last_seen_at\n\
+FROM devices\nORDER BY last_seen_at DESC
+DB -->> Server --: Result set (N rows)
+
+Server -->> WEB: **HTTP 200**\n\
+|_ body = {\n\
+|_   "devices": [\n\
+|_     {\n\
+|_       "device_id": "GB-XXXXXXXXXXXX",\n\
+|_       "status": "active",\n\
+|_       "firmware_version": "1.0.0",\n\
+|_       "last_seen_at": "2026-03-05T14:30:02Z"\n\
+|_     }\n\
+|_   ]\n\
+|_ }
+deactivate Server
+
+WEB -->> USER: Device list table\n(device ID, status, firmware, last seen)
+
+== 5.2 Device Detail ==
+
+USER -> WEB: Click on device "GB-XXXXXXXXXXXX"
+
+WEB -> Server ++: **GET** /api/devices/GB-XXXXXXXXXXXX
+
+Server -> DB ++: SELECT * FROM devices\nWHERE device_id = 'GB-XXXXXXXXXXXX'
+DB -->> Server --: Device row
+
+Server -> DB ++: SELECT * FROM device_configs\nWHERE device_id = 'GB-XXXXXXXXXXXX'\nAND status = 'applied'\nORDER BY port
+DB -->> Server --: Config rows (port 1, port 2)
+
+Server -> DB ++: SELECT * FROM watering_events\nWHERE device_id = 'GB-XXXXXXXXXXXX'\nORDER BY device_timestamp DESC\nLIMIT 10
+DB -->> Server --: Recent watering events
+
+Server -->> WEB: **HTTP 200**\n\
+|_ body = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "mac_address": "AA:BB:CC:DD:EE:FF",\n\
+|_   "firmware_version": "1.0.0",\n\
+|_   "hardware_revision": "rev3",\n\
+|_   "status": "active",\n\
+|_   "first_seen_at": "...",\n\
+|_   "last_seen_at": "...",\n\
+|_   "configs": [\n\
+|_     {"port": 1, "config_id": "cfg-...",\n\
+|_      "status": "applied", ...},\n\
+|_     {"port": 2, "config_id": "cfg-...",\n\
+|_      "status": "applied", ...}\n\
+|_   ],\n\
+|_   "recent_watering": [ ... ]\n\
+|_ }
+deactivate Server
+
+WEB -->> USER: Device detail page:\n\
+|_ Status card (device info)\n\
+|_ Port 1 config panel\n\
+|_ Port 2 config panel\n\
+|_ Recent watering timeline
+
+== 5.3 Watering History (per port) ==
+
+USER -> WEB: Select **Port 1** tab\nSet date range: 2026-03-01 to 2026-03-05
+
+WEB -> Server ++: **GET** /api/devices/GB-XXXXXXXXXXXX/watering\n\
+|_ ?port=1\n\
+|_ &from=2026-03-01T00:00:00Z\n\
+|_ &to=2026-03-05T23:59:59Z\n\
+|_ &limit=50
+
+Server -> DB ++: SELECT * FROM watering_events\nWHERE device_id = 'GB-XXXXXXXXXXXX'\n\
+AND port = 1\n\
+AND device_timestamp\n\
+  BETWEEN '2026-03-01' AND '2026-03-05'\nORDER BY device_timestamp DESC\nLIMIT 50
+DB -->> Server --: Result set
+
+Server -->> WEB: **HTTP 200**\n\
+|_ body = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "port": 1,\n\
+|_   "from": "2026-03-01T00:00:00Z",\n\
+|_   "to": "2026-03-05T23:59:59Z",\n\
+|_   "count": 12,\n\
+|_   "watering_events": [\n\
+|_     {\n\
+|_       "event": "watering_stopped",\n\
+|_       "timestamp": "2026-03-05T06:02:00Z",\n\
+|_       "trigger": "schedule",\n\
+|_       "actual_duration_s": 120,\n\
+|_       "humidity_at_stop_pct": 55.7,\n\
+|_       "stop_reason": "duration_complete"\n\
+|_     },\n\
+|_     ...\n\
+|_   ]\n\
+|_ }
+deactivate Server
+
+WEB -->> USER: Watering history table:\n\
+|_ Date/time, trigger type,\n\
+|_ duration, humidity before/after,\n\
+|_ stop reason
+
+== 5.4 Config Status ==
+
+USER -> WEB: Open config panel for **Port 2**
+
+WEB -> Server ++: **GET** /api/devices/GB-XXXXXXXXXXXX/config\n\
+|_ ?port=2
+
+Server -> DB ++: SELECT * FROM device_configs\nWHERE device_id = 'GB-XXXXXXXXXXXX'\nAND port = 2\nORDER BY created_at DESC\nLIMIT 1
+DB -->> Server --: Latest config row
+
+Server -->> WEB: **HTTP 200**\n\
+|_ body = {\n\
+|_   "config_id": "cfg-20260305-002",\n\
+|_   "port": 2,\n\
+|_   "watering_schedule": [\n\
+|_     {"time": "07:00", "duration_s": 90}\n\
+|_   ],\n\
+|_   "humidity_threshold_pct": 40,\n\
+|_   "status": "applied",\n\
+|_   "created_at": "2026-03-05T10:00:00Z",\n\
+|_   "acked_at": "2026-03-05T10:00:03Z"\n\
+|_ }
+deactivate Server
+
+WEB -->> USER: Config panel for port 2:\n\
+|_ Schedule: 07:00 (90s)\n\
+|_ Humidity threshold: 40%\n\
+|_ Status: Applied
+
+== 5.5 Update Config (triggers Phase 3) ==
+
+USER -> WEB: Edit port 2 threshold to 45%\nClick **Save**
+
+WEB -> Server ++: **POST** /api/devices/GB-XXXXXXXXXXXX/config\n\
+|_ body = {\n\
+|_   "port": 2,\n\
+|_   "watering_schedule": [\n\
+|_     {"time": "07:00", "duration_s": 90}\n\
+|_   ],\n\
+|_   "humidity_threshold_pct": 45\n\
+|_ }
+
+ref over Server
+  This triggers the  **Phase 3**
+  config protocol flow:
+  INSERT → PUBLISH → device ack.
+  See **phase3-config-protocol.puml**
+end ref
+
+Server -->> WEB: **HTTP 201 Created**\n\
+|_ body = {\n\
+|_   "config_id": "cfg-20260305-003",\n\
+|_   "port": 2,\n\
+|_   "status": "pushed"\n\
+|_ }
+deactivate Server
+
+WEB -->> USER: Config saved.\nStatus: Pushed\n(awaiting device acknowledgment)
+
+deactivate USER
+
+@enduml

@@ -1,0 +1,93 @@
+@startuml
+
+title GreenBox — RGB LED State Diagram\n2 LEDs: Network (LED 1) + Application (LED 2)
+
+skinparam state {
+  BackgroundColor<<off>> #EEEEEE
+  BackgroundColor<<red>> #FFCCCC
+  BackgroundColor<<green>> #CCFFCC
+  BackgroundColor<<yellow>> #FFFFCC
+  BackgroundColor<<orange>> #FFE0B2
+  BackgroundColor<<purple>> #E1BEE7
+  BackgroundColor<<blue>> #BBDEFB
+  BackgroundColor<<cyan>> #B2EBF2
+}
+
+state "ON" as ON_STATE {
+  state "LED 1 — Network Status" as LED1 {
+    [*] -> L1_OFF : Power ON
+    state "OFF" as L1_OFF <<off>>
+
+    state WORKING_LED1 {
+      state "WiFi connecting\nor reconnecting" as L1_RED_BLINK <<red>> : do / Red Blinking
+      state "WiFi credentials\nrejected" as L1_RED_STEADY <<red>> : do / Red Steady
+      state "WiFi connected\nto access point" as L1_GREEN <<green>> : do / Green Steady
+
+      L1_OFF --> L1_RED_BLINK : WiFi connect\nattempt started
+
+      L1_RED_BLINK --> L1_GREEN : WiFi association [DHCP OK]
+      L1_RED_BLINK --> L1_RED_STEADY : Wrong SSID\nor password
+
+      L1_RED_STEADY --> L1_RED_BLINK : User retries\nwith new credentials
+
+      L1_GREEN --> L1_RED_BLINK : WiFi lost
+    }
+    WORKING_LED1 --> L1_OFF : RES button held (5s)
+  }
+  LED1 --> [*] : Power OFF
+
+  ---
+
+  state "LED 2 — Application Status" as LED2 {
+    state "OFF" as L2_OFF <<off>>
+    state WORKING_LED2 {
+      state "MQTT registration\nin progress" as L2_YELLOW <<yellow>> : do / Yellow Blinking
+      state "Registration\nrejected" as L2_RED_STEADY <<red>> : do / Red Steady
+      state "Device registered\nsuccessfully" as L2_GREEN <<green>> : do / Green Steady
+      state "Config received,\napplying" as L2_BLUE <<blue>> : do / Blue Blinking
+      state "Config rejected" as L2_ORANGE_CFG <<orange>> : do / Orange Steady
+      state "Watering" as L2_CYAN <<cyan>> : do / Cyan Blinking
+      state "Overheat" as L2_PURPLE <<purple>> : entry / enter hibernate mode\ndo / Purple Steady\nexit / exit hibernate mode
+
+      state FAILURE {
+        state "DNS resolution\nfailure" as L2_RED_DNS <<red>> : do / Red Double Blink
+        state "TCP connection\nfailed" as L2_RED_TCP <<red>> : do / Red Slow Blink
+        state "MQTT broker\nauthentication\nrejected" as L2_RED_AUTH <<red>> : do / Red Fast Blink
+        state "Server response\ntimeout" as L2_ORANGE <<orange>> : do / Orange Blinking
+      }
+    }
+
+    WORKING_LED2 --> L2_OFF : RES button\nheld (5s)
+
+    [*] --> L2_OFF : Power ON
+
+    L2_OFF --> L2_PURPLE : overheat\ndetected
+    L2_PURPLE --> L2_OFF : temperature\nnormalized
+
+    L2_OFF --> L2_YELLOW : WiFi connected,\nregistration starts
+
+    L2_YELLOW --> L2_RED_DNS : DNS query\nfailed / timeout
+    L2_YELLOW --> L2_RED_TCP : TCP SYN timeout\nor RST received
+    L2_YELLOW --> L2_RED_AUTH : MQTT CONNACK\nrefused
+    L2_YELLOW --> L2_ORANGE : PUBLISH sent\n[no server response\nwithin 10s]
+    L2_YELLOW --> L2_RED_STEADY : Server responded\nwith "rejected"
+    L2_YELLOW --> L2_GREEN : Server responded\nwith "registered"\nor "already_registered"
+
+    FAILURE --> L2_YELLOW : Backoff elapsed
+    FAILURE --> L2_RED_STEADY : Max retries\nexhausted (10)
+
+    L2_GREEN -> L2_BLUE : config message\nreceived
+    L2_BLUE --> L2_GREEN : config applied\nsuccessfully
+    L2_BLUE --> L2_ORANGE_CFG : config validation\nfailed
+    L2_ORANGE_CFG --> L2_GREEN : timeout (10s)
+
+    L2_GREEN -> L2_CYAN : start_pump
+    L2_CYAN -> L2_GREEN : stop_pump
+  }
+  LED2 --> [*] : Power OFF
+}
+
+[*] --> ON_STATE : Power ON
+ON_STATE --> [*] : Power OFF
+
+@enduml

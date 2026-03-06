@@ -1,0 +1,71 @@
+@startuml
+
+title GreenBox — Entity Relationship Diagram
+
+skinparam class {
+  BackgroundColor #FFFDE7
+  BorderColor #333333
+}
+
+entity "devices" as devices {
+  * **device_id** : VARCHAR(20) <<PK>>
+  --
+  * mac_address : VARCHAR(17)
+  * firmware_version : VARCHAR(20)
+  * hardware_revision : VARCHAR(10)
+  * status : VARCHAR(20)
+  * first_seen_at : TIMESTAMP
+  * last_seen_at : TIMESTAMP
+  --
+  status IN ('active', 'inactive')
+}
+
+entity "device_configs" as configs {
+  * **id** : SERIAL <<PK>>
+  --
+  * device_id : VARCHAR(20) <<FK>>
+  * config_id : VARCHAR(50) <<UNIQUE>>
+  * port : SMALLINT
+  * watering_schedule : JSONB
+  * humidity_threshold_pct : INTEGER
+  * status : VARCHAR(20)
+  * created_at : TIMESTAMP
+  pushed_at : TIMESTAMP
+  acked_at : TIMESTAMP
+  --
+  port IN (1, 2)
+  humidity_threshold_pct 0..100
+  status IN ('pending', 'pushed',
+    'applied', 'rejected')
+  watering_schedule format:
+    [{"time":"HH:MM",
+      "duration_s": int}, ...]
+}
+
+entity "watering_events" as watering {
+  * **id** : BIGSERIAL <<PK>>
+  --
+  * device_id : VARCHAR(20) <<FK>>
+  * port : SMALLINT
+  * event_type : VARCHAR(20)
+  * device_timestamp : TIMESTAMP
+  * received_at : TIMESTAMP
+  * trigger : VARCHAR(20)
+  scheduled_time : TIME
+  humidity_at_start_pct : NUMERIC(5,2)
+  humidity_at_stop_pct : NUMERIC(5,2)
+  planned_duration_s : INTEGER
+  actual_duration_s : INTEGER
+  stop_reason : VARCHAR(30)
+  --
+  port IN (1, 2)
+  event_type IN ('watering_started',
+    'watering_stopped')
+  trigger IN ('schedule', 'humidity')
+  stop_reason IN ('duration_complete', 'error')
+}
+
+devices ||--o{ configs : "has configs\n(per port)"
+devices ||--o{ watering : "logs events\n(per port)"
+
+@enduml
