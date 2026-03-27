@@ -1,0 +1,11 @@
+CompileFlags:
+  CompilationDatabase: build/
+  Remove:
+    - -fno-malloc-dce
+    - -mlongcalls
+    - -fno-tree-switch-conversion
+    - -fzero-init-padding-bits=all
+    - -fstrict-volatile-bitfields
+    - -Wno-old-style-declaration
+    - -specs=picolibc.specs
+    - -fno-shrink-wrap

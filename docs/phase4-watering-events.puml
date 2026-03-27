@@ -34,7 +34,7 @@ par
   ESP32 -> ESP32 ++: Timer fired for port 1\nScheduled time: 06:00\nPlanned duration: 120s
   ESP32 -->> ESP32 --
 
-  ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 38.2
+  ESP32 -> ESP32 ++: Read humidity sensor 1 (port 1)\nhumidity_pct = 38.2
   ESP32 -->> ESP32 --
 
   ESP32 -> ESP32 ++: led(2, cyan_blink)\nActivate pump 1 GPIO (HIGH)
@@ -63,7 +63,7 @@ par
   ESP32 -> ESP32 ++: Deactivate pump 1 GPIO (LOW)
   ESP32 -->> ESP32 --
 
-  ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 55.7
+  ESP32 -> ESP32 ++: Read humidity sensor 1 (port 1)\nhumidity_pct = 55.7
   ESP32 -->> ESP32 --
 
   ESP32 -> ESP32 ++: led(2, green_steady)\nPump 1 stopped
@@ -90,7 +90,7 @@ else
   == 4.2 Humidity-Triggered Watering ==
 
   loop every 1 minute
-    ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 28.4
+    ESP32 -> ESP32 ++: Read humidity sensor 2 (port 2)\nhumidity_pct = 28.4
     ESP32 -->> ESP32 --
 
     opt humidity_pct < humidity_threshold_pct (e.g., 28.4 < 40)
@@ -119,7 +119,7 @@ else
       ESP32 -> ESP32 ++: Deactivate pump 2 GPIO (LOW)
       ESP32 -->> ESP32 --
 
-      ESP32 -> ESP32 ++: Read humidity sensor\nhumidity_pct = 41.2
+      ESP32 -> ESP32 ++: Read humidity sensor 2 (port 2)\nhumidity_pct = 41.2
       ESP32 -->> ESP32 --
 
       ESP32 -> ESP32 ++: led(2, green_steady)\nPump 2 stopped

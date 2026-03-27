@@ -7,7 +7,9 @@
 \usepackage{floatpag}
 \usepackage{hyperref}
 
-\title{\textbf{GreenBox} \\ System Documentation}
+\title{%
+  \includegraphics[width=0.35\textwidth]{docs_bin/nobg-light-logo.png}\\[1em]
+  \textbf{GreenBox} \\ System Documentation}
 \author{
   Kolomiiets Ivan
   \and Plaster Desir\'{e}e Maria
@@ -83,6 +85,94 @@ has internet connectivity --- and is destroyed once WiFi credentials are
 confirmed.
 
 %% ---------------------------------------------------------------
+\section{Hardware}
+
+The GreenBox PCB (Rev~1/1, KiCad~9.0.8) is built around an
+ESP32-WROOM-32 module. The schematic is in \texttt{schematic/}. Key
+peripherals:
+
+\begin{itemize}
+  \item \textbf{Humidity sensors} --- two CSMS~v2.0 capacitive soil moisture
+        sensors (H1, H2), each providing an analog voltage on CH1\_AOUT /
+        CH2\_AOUT (GPIO32, GPIO33).
+  \item \textbf{RGB LEDs} --- two common-cathode LED\_KRGB (D1~=~Network,
+        D2~=~Application), each with three 220\,$\Omega$ current-limiting
+        resistors (R, G, B channels). Connected to six GPIO pins for
+        independent PWM control.
+  \item \textbf{Water pumps} --- two DC motors (150\,mA each), driven via
+        SS8050 NPN transistors (Q1, Q2) with 1\,k$\Omega$ base resistors and
+        10\,k$\Omega$ pulldowns. PUMP1 and PUMP2 on separate GPIO pins.
+  \item \textbf{Reset button} --- SW1 (push-button) with R12 (1\,k$\Omega$)
+        in series and R11 (10\,k$\Omega$) pulldown. Connected to ORST
+        (GPIO12).
+\end{itemize}
+
+%% ---------------------------------------------------------------
+\section{Firmware Architecture}
+
+The ESP32 firmware is built with ESP-IDF~v6.0 using the framework's component
+architecture. Each functional area is implemented as a separate component under
+\texttt{gb-src/components/}, with explicit dependency declarations in
+\texttt{CMakeLists.txt}:
+
+\begin{itemize}
+  \item \textbf{nvs\_manager} --- wraps NVS (Non-Volatile Storage) for storing
+        and retrieving WiFi credentials (SSID, password) and MQTT broker
+        settings (host, port). Namespace: \texttt{greenbox}.
+  \item \textbf{led\_driver} --- controls the two RGB LEDs (D1, D2) via
+        FreeRTOS timers for blinking patterns. Supports 13~distinct LED states
+        covering all phases (steady, blinking, double-blink, slow/fast blink
+        in red, green, yellow, orange, purple, blue, cyan).
+  \item \textbf{wifi\_manager} --- manages WiFi in APSTA mode. On boot, the AP
+        SSID is set to the device~ID (\texttt{GB-\{MAC\}}) and the password to
+        the first 8~hex characters of the MAC address. Provides a blocking
+        \texttt{try\_connect()} that waits for STA association or failure with
+        a 15\,s timeout. Supports full stop/restart for hibernate.
+  \item \textbf{web\_server} --- HTTP server for Phase~1 provisioning. Serves an
+        embedded HTML form (\texttt{GET /}), a status endpoint
+        (\texttt{GET /status}) for overheat polling, and a connect endpoint
+        (\texttt{POST /connect}) that stores credentials in NVS, attempts WiFi
+        connection, and verifies MQTT broker reachability via TCP probe before
+        signaling success.
+  \item \textbf{temp\_monitor} --- runs a FreeRTOS background task for overheat
+        protection. During hibernate: stops WiFi and the web server entirely
+        (LED~2 = purple). On exit: restarts both. Exposes
+        \texttt{is\_hibernating()} for the web server to gate provisioning
+        requests.
+  \item \textbf{mqtt\_manager} --- implements Phase~2 MQTT registration using
+        MQTT~5.0 (via the \texttt{espressif/mqtt} managed component). Connects
+        to the broker stored in NVS, subscribes to the response topic, publishes
+        device metadata, and waits for server acknowledgment. Retries with
+        exponential backoff (1\,s to 60\,s, max 10~attempts) with per-failure
+        LED~2 feedback.
+\end{itemize}
+
+\subsection{Boot Flow}
+
+On power-on, \texttt{app\_main} reads saved WiFi credentials from NVS.
+If credentials exist and the STA connection succeeds, provisioning is skipped
+entirely and the device proceeds directly to Phase~2. If no credentials are
+stored or the connection fails, the device starts the provisioning AP and HTTP
+server as described in Phase~1.
+
+\subsection{Local MQTT Broker Setup}
+
+For development, a Mosquitto~2 broker configuration is provided in
+\texttt{broker/}:
+\begin{itemize}
+  \item \texttt{mosquitto.conf} --- plain TCP on port~1883, password
+        authentication, ACL-based topic authorization.
+  \item \texttt{passwd} --- password file (managed via \texttt{mosquitto\_passwd}).
+        Each device authenticates with its device~ID as both username and
+        client~ID, and a pre-shared key as password.
+  \item \texttt{acl} --- uses Mosquitto's \texttt{pattern} directive with
+        \texttt{\%u} (username) substitution to restrict each device to its own
+        topic subtree. A \texttt{greenbox-server} admin user has full access.
+  \item \texttt{docker-compose.yml} --- runs the broker via
+        \texttt{docker compose up}.
+\end{itemize}
+
+%% ---------------------------------------------------------------
 \section{Database Schema}
 
 The database uses three tables (see Figure~\ref{fig:er}):
@@ -148,12 +238,21 @@ server side.
 %% ---------------------------------------------------------------
 \section{Phase 1: WiFi + MQTT Broker Configuration}
 
-The user connects to the GreenBox hotspot, opens the on-device web interface,
+On first boot (or when no saved credentials exist), the device creates a WiFi
+hotspot with SSID equal to the device~ID (\texttt{GB-\{MAC\}}) and a password
+derived from the first 8~hex characters of the MAC address. The user connects
+to this hotspot, opens the on-device web interface at \texttt{192.168.4.1},
 and provides WiFi credentials (SSID, password) along with the MQTT broker
-settings (host, port). All parameters are persisted in NVS (Non-Volatile
-Storage). The device attempts to connect to the specified WiFi network.
-Overheat protection runs in parallel, entering hibernate mode if needed.
-See Figure~\ref{fig:phase1}.
+settings (host, port). All parameters are persisted in NVS.
+
+The device attempts to connect to the specified WiFi network. On success, it
+performs a TCP probe to verify that the MQTT broker is reachable at the given
+host and port before completing provisioning. Overheat protection runs in
+parallel: if the device enters hibernate, WiFi and the web server are shut down
+entirely and restarted when the temperature normalizes.
+
+On subsequent boots, saved credentials are tried automatically. If the
+connection succeeds, provisioning is skipped. See Figure~\ref{fig:phase1}.
 
 %% ---------------------------------------------------------------
 \section{Phase 2: Device Registration via MQTT}
@@ -216,8 +315,9 @@ Two triggers can start a watering cycle:
 
 \begin{enumerate}
   \item \textbf{Schedule trigger} --- a FreeRTOS timer fires at a configured
-        UTC time. The device reads the humidity sensor, activates the
-        pump GPIO for the target port, and runs for the configured duration.
+        UTC time. The device reads the corresponding humidity sensor
+        for that port, activates the pump GPIO, and runs for the configured
+        duration.
   \item \textbf{Humidity trigger} --- a periodic humidity check (every few
         seconds) detects that the reading has dropped below the configured
         threshold. The device activates the pump and runs for the configured

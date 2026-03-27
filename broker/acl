@@ -1,0 +1,12 @@
+# GreenBox MQTT ACL
+# pattern lines use %u (username) substitution for all authenticated users
+
+pattern write greenbox/%u/reg/request
+pattern read  greenbox/%u/reg/response
+pattern write greenbox/%u/config/ack
+pattern read  greenbox/%u/config/push
+pattern write greenbox/%u/event/watering
+
+# Admin / server user — full access to all greenbox topics
+user greenbox-server
+topic readwrite greenbox/#

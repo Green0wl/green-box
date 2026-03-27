@@ -16,19 +16,27 @@ participant WEB
 activate USER
 
 USER ->> ESP32 ++: Power ON
-USER ->> ESP32: Click and hold (5s) RES button for reset.
-ESP32 -> ESP32 ++: 0. Instantiate WLAN\n\
-1. Activate hotspot\n\
-2. Set SSID to the one printed on box\n\
-3. Set password to the one printed on box.
 
-note over ESP32: WLAN credentials are on the box
-USER ->> ESP32: Connect to local WLAN (for configuration)
-USER -> ESPWEB ++: GET on http://IP:80 on the box.
-ESPWEB -->> USER: OK 200 /index.html
+ESP32 -> ESP32 ++: 0. Init NVS, LEDs, WiFi (APSTA mode)\n\
+1. Read saved WiFi credentials from NVS\n\
+2. If found: try STA connect with saved creds
 
-ref over USER, ESPWEB : **Phase 1: WiFi + MQTT Broker Configuration**\nSee **phase1-wifi-setup.puml**
-ESP32 -->> ESP32 --
+alt Saved credentials connect successfully
+  ESP32 -->> ESP32 --: led(1, green_steady)\nSkip provisioning
+else No saved creds or connection failed
+  ESP32 -> ESP32 ++: Activate hotspot\n\
+  SSID = device_id (GB-{MAC})\n\
+  Password = first 8 hex chars of MAC\n\
+  Start temp_monitor (hibernate cycle)\n\
+  Start HTTP server on :80
+  note over ESP32: AP credentials derived from MAC address
+  USER ->> ESP32: Connect to device AP (for configuration)
+  USER -> ESPWEB ++: GET on http://192.168.4.1:80
+  ESPWEB -->> USER: OK 200 /index.html
+
+  ref over USER, ESPWEB : **Phase 1: WiFi + MQTT Broker Configuration**\nSee **phase1-wifi-setup.puml**
+  ESP32 -->> ESP32 --
+end
 
 note over ESP32: GreenBox is now connected\nto the global internet.
 

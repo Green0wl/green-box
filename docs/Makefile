@@ -17,7 +17,10 @@ docs_bin/%.png: docs_bin/%.svg
 docs_bin:
 	mkdir -p docs_bin
 
-pdf: docs $(PNG_OUT)
+docs_bin/nobg-light-logo.png: ../static/nobg-light-logo.svg | docs_bin
+	rsvg-convert -f png -d 300 -p 300 $< -o $@
+
+pdf: docs $(PNG_OUT) docs_bin/nobg-light-logo.png
 	pdflatex -output-directory=docs_bin greenbox-docs.tex
 	pdflatex -output-directory=docs_bin greenbox-docs.tex
 

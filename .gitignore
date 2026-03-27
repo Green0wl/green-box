@@ -1,1 +1,14 @@
-docs/docs_bin
+# Build artifacts
+docs/docs_bin/
+gb-src/build/
+gb-src/managed_components/
+gb-src/.cache/
+
+# Editor swap files
+*.swp
+*.swo
+*~
+
+# Mosquitto broker runtime
+broker/data/
+broker/log/

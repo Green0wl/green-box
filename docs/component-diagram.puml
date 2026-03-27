@@ -20,23 +20,38 @@ skinparam cloud {
 }
 
 package "ESP32 BOX" {
-  [ESP32 Firmware] as FW
-  [ESP32 Web Server\n(HTTP :80)] as ESPWEB
+  package "ESP-IDF Firmware Components" {
+    [wifi_manager\n(AP+STA, APSTA)] as WIFIMGR
+    [web_server\n(HTTP :80, provisioning)] as ESPWEB
+    [mqtt_manager\n(MQTT 5.0 registration)] as MQTTMGR
+    [nvs_manager\n(credential storage)] as NVSMGR
+    [led_driver\n(2x RGB LED, PWM)] as LEDDRV
+    [temp_monitor\n(overheat / hibernate)] as TEMPMON
+  }
 
-  [Humidity Sensor] as SENSOR
-  [Water Pump 1\n(Port 1)] as PUMP1
-  [Water Pump 2\n(Port 2)] as PUMP2
-  [RGB LED 1\n(Network)] as LED1
-  [RGB LED 2\n(Application)] as LED2
-  [NVS Storage\n(Non-Volatile)] as NVS
+  [CSMS v2.0\nHumidity Sensor 1\n(Port 1, GPIO32)] as SENSOR1
+  [CSMS v2.0\nHumidity Sensor 2\n(Port 2, GPIO33)] as SENSOR2
+  [Water Pump 1\n(Port 1, SS8050)] as PUMP1
+  [Water Pump 2\n(Port 2, SS8050)] as PUMP2
+  [LED_KRGB D1\n(Network)] as LED1
+  [LED_KRGB D2\n(Application)] as LED2
+  [NVS Flash] as NVS
+  [RST Button\n(GPIO12)] as RST
 
-  FW --> SENSOR : GPIO\n(analog read)
-  FW --> PUMP1 : GPIO\n(digital out)
-  FW --> PUMP2 : GPIO\n(digital out)
-  FW --> LED1 : GPIO (PWM)
-  FW --> LED2 : GPIO (PWM)
-  FW --> NVS : Read / Write\n(WiFi creds, MQTT broker,\nconfig per port)
-  FW --> ESPWEB : Internal
+  WIFIMGR --> SENSOR1 : ADC read
+  WIFIMGR --> SENSOR2 : ADC read
+  RST --> WIFIMGR : Hardware reset
+  WIFIMGR --> PUMP1 : GPIO out
+  WIFIMGR --> PUMP2 : GPIO out
+  LEDDRV --> LED1 : PWM (R,G,B)
+  LEDDRV --> LED2 : PWM (R,G,B)
+  NVSMGR --> NVS : Read / Write
+  ESPWEB --> WIFIMGR : try_connect
+  ESPWEB --> NVSMGR : store creds
+  ESPWEB --> TEMPMON : is_hibernating
+  MQTTMGR --> NVSMGR : read broker config
+  TEMPMON --> WIFIMGR : stop / restart
+  TEMPMON --> ESPWEB : stop / restart
 }
 
 cloud "Network" {
@@ -52,7 +67,7 @@ node "Cloud Infrastructure" {
 
 actor "User" as USER
 
-FW <--> WIFI : WiFi STA\n(802.11ac)
+WIFIMGR <--> WIFI : WiFi STA\n(802.11ac)
 WIFI <--> BROKER : TCP :1883\n(plain MQTT 5.0)
 
 BROKER <--> SERVER : MQTT\npub / sub
@@ -63,9 +78,9 @@ USER <--> ESPWEB : Browser\n(HTTP, local network)
 
 note bottom of BROKER
   Topics:
-  greenbox/{device_id}/reg/*
-  greenbox/{device_id}/config/*
-  greenbox/{device_id}/event/*
+  greenbox/{device_id}/reg/+
+  greenbox/{device_id}/config/+
+  greenbox/{device_id}/event/+
 end note
 
 note bottom of DB

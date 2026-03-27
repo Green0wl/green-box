@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GreenBox Setup</title>
+</head>
+<body>
+<h1>GreenBox Setup</h1>
+<p id="overheat" style="color:red;font-weight:bold;display:none">Device overheated — provisioning disabled.</p>
+<form id="form">
+  <label>WiFi SSID<br><input name="ssid" required></label><br><br>
+  <label>WiFi Password<br><input name="password" type="password" required></label><br><br>
+  <label>MQTT Broker Host<br><input name="mqtt_host" required></label><br><br>
+  <label>MQTT Broker Port<br><input name="mqtt_port" type="number" value="1883" required></label><br><br>
+  <button type="submit" id="btn">Connect</button>
+</form>
+<p id="result"></p>
+<script>
+var form = document.getElementById('form');
+var btn = document.getElementById('btn');
+var result = document.getElementById('result');
+
+form.addEventListener('submit', function(e) {
+  e.preventDefault();
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  result.textContent = '';
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/connect', true);
+  xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+
+  xhr.onload = function() {
+    var data = JSON.parse(xhr.responseText);
+    if (data.status === 'ok') {
+      result.textContent = 'Connected! The hotspot will shut down shortly.';
+    } else {
+      var reasons = {
+        wrong_password: 'Wrong WiFi password.',
+        ap_not_found: 'WiFi network not found.',
+        timeout: 'Connection timed out.',
+        overheat: 'Device overheated. Please wait.',
+        mqtt_unreachable: 'MQTT broker unreachable. WiFi connected but broker not found.'
+      };
+      result.textContent = reasons[data.reason] || JSON.stringify(data.reason);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  };
+
+  xhr.onerror = function() {
+    result.textContent = 'Request failed. Are you still connected to GreenBox?';
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  };
+
+  var params = new URLSearchParams(new FormData(form)).toString();
+  xhr.send(params);
+});
+
+var overheat = document.getElementById('overheat');
+setInterval(function() {
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/status', true);
+  xhr.onload = function() {
+    var data = JSON.parse(xhr.responseText);
+    if (data.hibernating) {
+      overheat.style.display = 'block';
+      btn.disabled = true;
+    } else {
+      overheat.style.display = 'none';
+      if (btn.textContent === 'Connect') btn.disabled = false;
+    }
+  };
+  xhr.send();
+}, 3000);
+</script>
+</body>
+</html>
