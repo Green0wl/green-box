@@ -5,8 +5,10 @@
 #include "temp_monitor.h"
 #include "mqtt_manager.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include <time.h>
 
 static const char *TAG = "app_main";
 static EventGroupHandle_t s_prov_done;
@@ -84,15 +86,31 @@ void app_main(void)
     wifi_manager_stop_ap();
     ESP_LOGI(TAG, "Provisioning complete, WiFi connected");
 
+    /* Sync time via SNTP */
+    ESP_LOGI(TAG, "Syncing time via SNTP...");
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&sntp_cfg);
+    for (int i = 0; i < 15; i++) {
+        if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(1000)) == ESP_OK) break;
+    }
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    ESP_LOGI(TAG, "Time synced: %04d-%02d-%02dT%02d:%02d:%02dZ",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
+
     /* ---- Phase 2: MQTT registration ---- */
     mqtt_reg_result_t reg_result;
     ESP_ERROR_CHECK(mqtt_manager_register(&reg_result));
 
-    if (reg_result == MQTT_REG_OK) {
-        ESP_LOGI(TAG, "Device registered, ready for Phase 3");
-    } else {
-        ESP_LOGE(TAG, "Registration failed (result=%d)", reg_result);
+    if (reg_result != MQTT_REG_OK) {
+        ESP_LOGE(TAG, "Registration failed (result=%d), halting", reg_result);
+        return;
     }
 
-    /* Phase 3 (config push) starts here */
+    ESP_LOGI(TAG, "Device registered, entering Phase 3+4");
+
+    /* ---- Phase 3+4: Config + Watering (blocks forever) ---- */
+    mqtt_manager_run();
 }

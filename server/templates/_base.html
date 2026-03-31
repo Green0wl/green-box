@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}GreenBox{% endblock %}</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
+  nav { background: #1b3d1b; color: #fff; padding: 0.8rem 1.5rem; }
+  nav a { color: #fff; text-decoration: none; font-weight: bold; font-size: 1.1rem; }
+  .container { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+  table { width: 100%; border-collapse: collapse; background: #fff; }
+  th, td { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid #ddd; }
+  th { background: #e8e8e8; }
+  a { color: #1b6d1b; }
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.85rem; }
+  .badge-active { background: #c8e6c9; color: #2e7d32; }
+  .badge-inactive { background: #eee; color: #888; }
+  .badge-applied { background: #c8e6c9; color: #2e7d32; }
+  .badge-pushed { background: #fff9c4; color: #f57f17; }
+  .badge-pending { background: #e3f2fd; color: #1565c0; }
+  .badge-rejected { background: #ffcdd2; color: #c62828; }
+  .card { background: #fff; padding: 1rem 1.2rem; margin-bottom: 1rem; border: 1px solid #ddd; border-radius: 4px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  label { display: block; margin: 0.4rem 0 0.15rem; font-size: 0.9rem; }
+  input, select { padding: 0.4rem; width: 100%; box-sizing: border-box; }
+  button { padding: 0.5rem 1.2rem; background: #1b6d1b; color: #fff; border: none; border-radius: 3px; cursor: pointer; margin-top: 0.5rem; }
+  .muted { color: #888; font-size: 0.9rem; }
+  textarea { resize: none !important; }
+</style>
+</head>
+<body>
+<nav><a href="/">GreenBox</a></nav>
+<div class="container">
+{% block content %}{% endblock %}
+</div>
+</body>
+</html>

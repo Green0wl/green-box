@@ -1,0 +1,27 @@
+{% extends "_base.html" %}
+{% block title %}Devices — GreenBox{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+{% if devices %}
+<table>
+  <tr>
+    <th>Device ID</th>
+    <th>Status</th>
+    <th>Firmware</th>
+    <th>Hardware</th>
+    <th>Last Seen</th>
+  </tr>
+  {% for d in devices %}
+  <tr>
+    <td><a href="/devices/{{ d.device_id }}">{{ d.device_id }}</a></td>
+    <td><span class="badge badge-{{ d.status }}">{{ d.status }}</span></td>
+    <td>{{ d.firmware_version }}</td>
+    <td>{{ d.hardware_revision }}</td>
+    <td>{{ d.last_seen_at.strftime('%Y-%m-%d %H:%M:%S') if d.last_seen_at else '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">No devices registered yet. Power on a GreenBox device to get started.</p>
+{% endif %}
+{% endblock %}

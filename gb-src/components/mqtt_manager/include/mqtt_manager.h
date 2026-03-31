@@ -10,9 +10,12 @@ typedef enum {
 
 /**
  * Run the Phase 2 registration flow.
- * Reads MQTT broker host/port from NVS, connects, subscribes, publishes
- * registration request, and waits for server response.
- * Retries with exponential backoff up to 10 times.
- * Blocks until registered or all retries exhausted.
+ * Keeps the MQTT client connected on success for Phase 3+4.
  */
 esp_err_t mqtt_manager_register(mqtt_reg_result_t *result);
+
+/**
+ * Run Phase 3+4: subscribe to config/push, handle configs, run watering timers.
+ * Blocks indefinitely. Must be called after successful registration.
+ */
+esp_err_t mqtt_manager_run(void);

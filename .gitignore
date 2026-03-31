@@ -9,6 +9,15 @@ gb-src/.cache/
 *.swo
 *~
 
+# Python
+server/__pycache__/
+server/app/__pycache__/
+server/.venv/
+__pycache__/
+
+# Docker volumes
+postgres-data/
+
 # Mosquitto broker runtime
 broker/data/
 broker/log/

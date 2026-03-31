@@ -1,0 +1,128 @@
+{% extends "_base.html" %}
+{% block title %}{{ device.device_id }} — GreenBox{% endblock %}
+{% block content %}
+<h1>{{ device.device_id }}</h1>
+
+<div class="card">
+  <strong>MAC:</strong> {{ device.mac_address }} &nbsp;
+  <strong>Firmware:</strong> {{ device.firmware_version }} &nbsp;
+  <strong>Hardware:</strong> {{ device.hardware_revision }} &nbsp;
+  <span class="badge badge-{{ device.status }}">{{ device.status }}</span>
+  <br>
+  <span class="muted">
+    First seen: {{ device.first_seen_at.strftime('%Y-%m-%d %H:%M:%S') if device.first_seen_at else '—' }} &nbsp;
+    Last seen: {{ device.last_seen_at.strftime('%Y-%m-%d %H:%M:%S') if device.last_seen_at else '—' }}
+  </span>
+</div>
+
+<h2>Configuration</h2>
+<div class="grid">
+{% for port_num in [1, 2] %}
+  <div class="card">
+    <h3>Port {{ port_num }}</h3>
+    {% set cfg = configs.get(port_num) %}
+    {% if cfg %}
+      <p>
+        <span class="badge badge-{{ cfg.status }}">{{ cfg.status }}</span>
+        <span class="muted">{{ cfg.config_id }}</span>
+      </p>
+      <p><strong>Humidity threshold:</strong> {{ cfg.humidity_threshold_pct }}%</p>
+      <p><strong>Schedule:</strong></p>
+      <ul>
+      {% for slot in cfg.watering_schedule %}
+        <li>{{ slot.time }} — {{ slot.duration_s }}s</li>
+      {% endfor %}
+      </ul>
+      <p class="muted">
+        Created: {{ cfg.created_at.strftime('%Y-%m-%d %H:%M') if cfg.created_at else '—' }}
+        {% if cfg.acked_at %} | Acked: {{ cfg.acked_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+      </p>
+    {% else %}
+      <p class="muted">No configuration pushed yet.</p>
+    {% endif %}
+
+    <hr>
+    <h4>Push new config</h4>
+    <form method="POST" action="/api/devices/{{ device.device_id }}/config"
+          onsubmit="return submitConfig(this, {{ port_num }})">
+      <label>Humidity threshold (%)</label>
+      <input type="number" name="humidity" min="0" max="100" value="{{ cfg.humidity_threshold_pct if cfg else 40 }}" required>
+
+      <label>Schedule (HH:MM duration_s, one per line)</label>
+      <textarea name="schedule" rows="3" style="width:100%;padding:0.4rem;box-sizing:border-box"
+                placeholder="06:00 120&#10;18:30 90">{% if cfg %}{% for s in cfg.watering_schedule %}{{ s.time }} {{ s.duration_s }}
+{% endfor %}{% endif %}</textarea>
+
+      <button type="submit">Push Config</button>
+      <span id="result-{{ port_num }}" class="muted"></span>
+    </form>
+  </div>
+{% endfor %}
+</div>
+
+<h2>Recent Watering Events</h2>
+{% if events %}
+<table>
+  <tr>
+    <th>Time</th>
+    <th>Port</th>
+    <th>Event</th>
+    <th>Trigger</th>
+    <th>Duration</th>
+    <th>Humidity</th>
+    <th>Reason</th>
+  </tr>
+  {% for e in events %}
+  <tr>
+    <td>{{ e.device_timestamp.strftime('%Y-%m-%d %H:%M:%S') if e.device_timestamp else '—' }}</td>
+    <td>{{ e.port }}</td>
+    <td>{{ e.event_type }}</td>
+    <td>{{ e.trigger }}</td>
+    <td>{{ e.actual_duration_s or e.planned_duration_s or '—' }}s</td>
+    <td>
+      {% if e.humidity_at_start_pct is not none %}start={{ e.humidity_at_start_pct }}%{% endif %}
+      {% if e.humidity_at_stop_pct is not none %}stop={{ e.humidity_at_stop_pct }}%{% endif %}
+      {% if e.humidity_at_start_pct is none and e.humidity_at_stop_pct is none %}—{% endif %}
+    </td>
+    <td>{{ e.stop_reason or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">No watering events recorded yet.</p>
+{% endif %}
+
+<script>
+function submitConfig(form, port) {
+  var humidity = form.humidity.value;
+  var lines = form.schedule.value.trim().split('\n');
+  var schedule = [];
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split(/\s+/);
+    if (parts.length === 2) {
+      schedule.push({time: parts[0], duration_s: parseInt(parts[1])});
+    }
+  }
+  if (schedule.length === 0) { alert('Add at least one schedule entry'); return false; }
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/devices/{{ device.device_id }}/config', true);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.onload = function() {
+    var res = document.getElementById('result-' + port);
+    if (xhr.status === 201) {
+      res.textContent = 'Pushed!';
+      setTimeout(function() { location.reload(); }, 1000);
+    } else {
+      res.textContent = 'Error: ' + xhr.responseText;
+    }
+  };
+  xhr.send(JSON.stringify({
+    port: port,
+    watering_schedule: schedule,
+    humidity_threshold_pct: parseInt(humidity)
+  }));
+  return false;
+}
+</script>
+{% endblock %}

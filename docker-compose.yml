@@ -1,0 +1,39 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./broker/passwd:/mosquitto/config/passwd:ro
+      - ./broker/acl:/mosquitto/config/acl:ro
+    user: "0:0"
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: greenbox
+      POSTGRES_USER: greenbox
+      POSTGRES_PASSWORD: greenbox
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./server/sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+
+  server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://greenbox:greenbox@postgres:5432/greenbox
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USERNAME: greenbox-server
+      MQTT_PASSWORD: serverpass
+    depends_on:
+      - mosquitto
+      - postgres
+
+volumes:
+  postgres-data:
