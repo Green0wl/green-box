@@ -26,7 +26,7 @@ loop Registration retry loop\n(attempt 1..10, exponential backoff:\n1s, 2s, 4s, 
     ESP32 -> ESP32 ++: gethostbyname(BROKER_HOST)
 
     break DNS resolution failed (timeout or NXDOMAIN)
-      ESP32 -> ESP32 ++: set led(2, red_double_blink)\n\
+      ESP32 -> ESP32 ++: set led(2, red_fast_blink)\n\
 |_Wait backoff interval
       ESP32 -->> ESP32 --
     end
@@ -175,7 +175,7 @@ loop Registration retry loop\n(attempt 1..10, exponential backoff:\n1s, 2s, 4s, 
     == 2.7 Handle Server Response ==
 
     break No response within 10s timeout
-      ESP32 -> ESP32 ++: led(2, orange_blinking)\n\
+      ESP32 -> ESP32 ++: led(2, white_blinking)\n\
 |_Wait backoff interval
       MQTTPUB -> MQTTBROKER: **DISCONNECT**
       deactivate MQTTPUB

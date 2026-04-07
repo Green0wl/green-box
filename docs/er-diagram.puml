@@ -28,6 +28,7 @@ entity "device_configs" as configs {
   * port : SMALLINT
   * watering_schedule : JSONB
   * humidity_threshold_pct : INTEGER
+  * humidity_duration_s : INTEGER
   * status : VARCHAR(20)
   * created_at : TIMESTAMP
   pushed_at : TIMESTAMP

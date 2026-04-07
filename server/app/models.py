@@ -32,6 +32,7 @@ class DeviceConfig(Base):
     port: Mapped[int] = mapped_column(SmallInteger)
     watering_schedule: Mapped[dict] = mapped_column(JSON)
     humidity_threshold_pct: Mapped[int]
+    humidity_duration_s: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(TZDateTime)
     pushed_at: Mapped[datetime | None] = mapped_column(TZDateTime)

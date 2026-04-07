@@ -25,7 +25,7 @@ package "ESP32 BOX" {
     [web_server\n(HTTP :80, provisioning)] as ESPWEB
     [mqtt_manager\n(MQTT 5.0 registration)] as MQTTMGR
     [nvs_manager\n(credential storage)] as NVSMGR
-    [led_driver\n(2x RGB LED, PWM)] as LEDDRV
+    [led_driver\n(2x RGB LED, GPIO)] as LEDDRV
     [temp_monitor\n(overheat / hibernate)] as TEMPMON
   }
 
@@ -43,8 +43,8 @@ package "ESP32 BOX" {
   RST --> WIFIMGR : Hardware reset
   WIFIMGR --> PUMP1 : GPIO out
   WIFIMGR --> PUMP2 : GPIO out
-  LEDDRV --> LED1 : PWM (R,G,B)
-  LEDDRV --> LED2 : PWM (R,G,B)
+  LEDDRV --> LED1 : GPIO (R,G,B)
+  LEDDRV --> LED2 : GPIO (R,G,B)
   NVSMGR --> NVS : Read / Write
   ESPWEB --> WIFIMGR : try_connect
   ESPWEB --> NVSMGR : store creds

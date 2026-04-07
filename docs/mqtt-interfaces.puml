@@ -21,7 +21,7 @@ package "Registration — Phase 2" <<Rectangle>> #E8F5E9 {
     ! mac_address : string
     ! firmware_version : string
     ! hardware_revision : string
-    ! uptime_ms : integer
+    ! uptime_ms : integer (for later use, not stored in MVP)
   }
 
   interface "RegistrationResponse" as RegResp {
@@ -35,8 +35,8 @@ package "Registration — Phase 2" <<Rectangle>> #E8F5E9 {
   }
 
   class "ConfigBlock" as CfgBlock {
-    ! telemetry_interval_s : integer
-    ! ota_check_interval_s : integer
+    ! telemetry_interval_s : integer (for later use, not consumed in MVP)
+    ! ota_check_interval_s : integer (for later use, not consumed in MVP)
   }
 
   RegResp --> CfgBlock
@@ -51,8 +51,9 @@ package "Configuration — Phase 3" <<Rectangle>> #E3F2FD {
     ! config_id : string
     ! timestamp : ISO 8601
     ! port : 1 | 2
-    ! watering_schedule : WateringSlot[]
-    ! humidity_threshold_pct : 0–100
+    ? watering_schedule : WateringSlot[]
+    ? humidity_threshold_pct : 0–100 (0 = disabled)
+    ? humidity_duration_s : integer (0 = disabled)
   }
 
   interface "ConfigAck" as CfgAck {
@@ -61,10 +62,10 @@ package "Configuration — Phase 3" <<Rectangle>> #E3F2FD {
     --
     ! config_id : string
     ! status : "applied" | "rejected"
-    ! timestamp : ISO 8601
-    ! device_id : string
-    ! port : 1 | 2
-    ? reason : string
+    ? timestamp : ISO 8601 (for later use, not stored in MVP)
+    ? device_id : string (for later use, not stored in MVP)
+    ? port : 1 | 2 (for later use, not stored in MVP)
+    ? reason : string (for later use, not stored in MVP)
   }
 
   class "WateringSlot" as WSlot {

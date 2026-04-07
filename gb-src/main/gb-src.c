@@ -4,8 +4,11 @@
 #include "web_server.h"
 #include "temp_monitor.h"
 #include "mqtt_manager.h"
+#include "rst_button.h"
 #include "esp_log.h"
 #include "esp_netif_sntp.h"
+#include "esp_system.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include <time.h>
@@ -13,9 +16,19 @@
 static const char *TAG = "app_main";
 static EventGroupHandle_t s_prov_done;
 
+static void on_rst_button(void)
+{
+    ESP_LOGW(TAG, "RST button: erasing WiFi credentials and restarting");
+    led_driver_set(LED_NETWORK, LED_STATE_OFF);
+    led_driver_set(LED_APPLICATION, LED_STATE_OFF);
+    nvs_flash_erase();
+    esp_restart();
+}
+
 static void on_hibernate_enter(void)
 {
     ESP_LOGW(TAG, "Hibernate: stopping web server and WiFi");
+    led_driver_set(LED_NETWORK, LED_STATE_OFF);
     web_server_stop();
     wifi_manager_stop();
 }
@@ -25,6 +38,7 @@ static void on_hibernate_exit(void)
     ESP_LOGI(TAG, "Hibernate exit: restarting WiFi AP and web server");
     wifi_manager_restart_ap();
     web_server_start(s_prov_done);
+    led_driver_set(LED_NETWORK, LED_STATE_BLUE_BLINKING);
 }
 
 static bool try_saved_credentials(void)
@@ -59,8 +73,9 @@ void app_main(void)
 {
     /* ---- Phase 1: WiFi provisioning ---- */
     ESP_ERROR_CHECK(nvs_manager_init());
-    ESP_ERROR_CHECK(led_driver_init());
     ESP_ERROR_CHECK(wifi_manager_init());
+    ESP_ERROR_CHECK(led_driver_init());
+    ESP_ERROR_CHECK(rst_button_start(on_rst_button));
 
     if (!try_saved_credentials()) {
         /* No saved creds or they failed — run provisioning server */
@@ -73,6 +88,7 @@ void app_main(void)
         s_prov_done = xEventGroupCreate();
         ESP_ERROR_CHECK(web_server_start(s_prov_done));
 
+        led_driver_set(LED_NETWORK, LED_STATE_BLUE_BLINKING);
         ESP_LOGI(TAG, "Waiting for provisioning...");
         xEventGroupWaitBits(s_prov_done, WEB_SERVER_PROV_DONE_BIT,
                             pdFALSE, pdTRUE, portMAX_DELAY);

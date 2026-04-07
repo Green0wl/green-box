@@ -18,7 +18,7 @@ entity "Global WiFi" as GWIFI
 
 activate USER
 activate ESP32
-note over ESP32: WLAN process is still running
+note over ESP32: WLAN process is still running\nled(1, blue_blinking)
 ESP32 -> ESP32 ++
 
 par

@@ -1,6 +1,7 @@
 {% extends "_base.html" %}
 {% block title %}{{ device.device_id }} — GreenBox{% endblock %}
 {% block content %}
+<meta http-equiv="refresh" content="10">
 <h1>{{ device.device_id }}</h1>
 
 <div class="card">
@@ -26,7 +27,8 @@
         <span class="badge badge-{{ cfg.status }}">{{ cfg.status }}</span>
         <span class="muted">{{ cfg.config_id }}</span>
       </p>
-      <p><strong>Humidity threshold:</strong> {{ cfg.humidity_threshold_pct }}%</p>
+      <p><strong>Humidity threshold:</strong> {{ cfg.humidity_threshold_pct }}%
+         {% if cfg.humidity_duration_s %} (duration: {{ cfg.humidity_duration_s }}s){% endif %}</p>
       <p><strong>Schedule:</strong></p>
       <ul>
       {% for slot in cfg.watering_schedule %}
@@ -45,13 +47,16 @@
     <h4>Push new config</h4>
     <form method="POST" action="/api/devices/{{ device.device_id }}/config"
           onsubmit="return submitConfig(this, {{ port_num }})">
-      <label>Humidity threshold (%)</label>
-      <input type="number" name="humidity" min="0" max="100" value="{{ cfg.humidity_threshold_pct if cfg else 40 }}" required>
-
-      <label>Schedule (HH:MM duration_s, one per line)</label>
+      <label>Schedule (HH:MM duration_s, one per line — leave empty to disable)</label>
       <textarea name="schedule" rows="3" style="width:100%;padding:0.4rem;box-sizing:border-box"
                 placeholder="06:00 120&#10;18:30 90">{% if cfg %}{% for s in cfg.watering_schedule %}{{ s.time }} {{ s.duration_s }}
 {% endfor %}{% endif %}</textarea>
+
+      <label>Humidity threshold (% — 0 or empty to disable)</label>
+      <input type="number" name="humidity" min="0" max="100" value="{{ cfg.humidity_threshold_pct if cfg else '' }}">
+
+      <label>Humidity watering duration (s — when threshold triggers)</label>
+      <input type="number" name="humidity_duration" min="0" value="{{ cfg.humidity_duration_s if cfg and cfg.humidity_duration_s else '' }}">
 
       <button type="submit">Push Config</button>
       <span id="result-{{ port_num }}" class="muted"></span>
@@ -94,16 +99,26 @@
 
 <script>
 function submitConfig(form, port) {
-  var humidity = form.humidity.value;
-  var lines = form.schedule.value.trim().split('\n');
+  var humidity = form.humidity.value.trim();
+  var humDuration = form.humidity_duration.value.trim();
+  var schedText = form.schedule.value.trim();
   var schedule = [];
-  for (var i = 0; i < lines.length; i++) {
-    var parts = lines[i].trim().split(/\s+/);
-    if (parts.length === 2) {
-      schedule.push({time: parts[0], duration_s: parseInt(parts[1])});
+  if (schedText) {
+    var lines = schedText.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].trim().split(/\s+/);
+      if (parts.length === 2) {
+        schedule.push({time: parts[0], duration_s: parseInt(parts[1])});
+      }
     }
   }
-  if (schedule.length === 0) { alert('Add at least one schedule entry'); return false; }
+
+  var payload = {
+    port: port,
+    watering_schedule: schedule,
+    humidity_threshold_pct: humidity ? parseInt(humidity) : 0,
+    humidity_duration_s: humDuration ? parseInt(humDuration) : 0
+  };
 
   var xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/devices/{{ device.device_id }}/config', true);
@@ -117,11 +132,7 @@ function submitConfig(form, port) {
       res.textContent = 'Error: ' + xhr.responseText;
     }
   };
-  xhr.send(JSON.stringify({
-    port: port,
-    watering_schedule: schedule,
-    humidity_threshold_pct: parseInt(humidity)
-  }));
+  xhr.send(JSON.stringify(payload));
   return false;
 }
 </script>

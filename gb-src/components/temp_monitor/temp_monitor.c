@@ -21,9 +21,8 @@ static void temp_monitor_task(void *arg)
 
         ESP_LOGW(TAG, "Overheat detected — entering hibernate");
         s_hibernating = true;
-        led_driver_set(LED_APPLICATION, LED_STATE_PURPLE_STEADY);
-
         if (s_cb.on_hibernate_enter) s_cb.on_hibernate_enter();
+        led_driver_set(LED_APPLICATION, LED_STATE_PURPLE_STEADY);
 
         vTaskDelay(pdMS_TO_TICKS(HIBERNATE_PERIOD_MS));
 

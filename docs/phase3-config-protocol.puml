@@ -76,7 +76,8 @@ WEB -> Server ++: **POST** /api/devices/{device_id}/config\n\
 |_     {"time": "06:00", "duration_s": 120},\n\
 |_     {"time": "18:30", "duration_s": 90}\n\
 |_   ],\n\
-|_   "humidity_threshold_pct": 35\n\
+|_   "humidity_threshold_pct": 35,\n\
+|_   "humidity_duration_s": 60\n\
 |_ }
 
 == 3.3 Server Stores and Pushes Config ==
@@ -91,6 +92,7 @@ Server -> DB ++: INSERT INTO device_configs (\n\
 |_  device_id, config_id, port,\n\
 |_  watering_schedule,\n\
 |_  humidity_threshold_pct,\n\
+|_  humidity_duration_s,\n\
 |_  status, created_at\n\
 ) VALUES (\n\
 |_ 'GB-XXXXXXXXXXXX',\n\
@@ -99,6 +101,7 @@ Server -> DB ++: INSERT INTO device_configs (\n\
 |_ '[{"time":"06:00","duration_s":120},\n\
 |_   {"time":"18:30","duration_s":90}]',\n\
 |_ 35,\n\
+|_ 60,\n\
 |_ 'pending',\n\
 |_ NOW()\n\
 )
@@ -116,7 +119,8 @@ Server -> MQTTBROKER ++: **PUBLISH**\n\
 |_     {"time": "06:00", "duration_s": 120},\n\
 |_     {"time": "18:30", "duration_s": 90}\n\
 |_   ],\n\
-|_   "humidity_threshold_pct": 35\n\
+|_   "humidity_threshold_pct": 35,\n\
+|_   "humidity_duration_s": 60\n\
 |_ }
 
 MQTTBROKER -->> Server: **PUBACK**
@@ -201,7 +205,7 @@ alt Config valid
   deactivate MQTTPUB
 
 else Config invalid (validation failed)
-  ESP32 -> ESP32 ++: set led(2, orange_steady)
+  ESP32 -> ESP32 ++: set led(2, white_steady)
   ESP32 -->> ESP32 --
 
   ESP32 ->> MQTTPUB ++
@@ -231,6 +235,13 @@ end
 
 MQTTBROKER -> Server ++: Deliver ack message from\n"greenbox/{device_id}/config/ack"
 deactivate MQTTBROKER
+
+note right of Server
+  MVP: server extracts only
+  config_id and status from ack.
+  Other fields (timestamp, port,
+  reason) sent for later use.
+end note
 
 Server -> DB ++: UPDATE device_configs SET\n\
 |_ status = 'applied',\n\

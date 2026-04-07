@@ -108,6 +108,7 @@ async def push_config_endpoint(
         port=body.port,
         watering_schedule=[s.model_dump() for s in body.watering_schedule],
         humidity_threshold_pct=body.humidity_threshold_pct,
+        humidity_duration_s=body.humidity_duration_s,
         status="pending",
         created_at=now,
     )
@@ -120,6 +121,7 @@ async def push_config_endpoint(
         "port": body.port,
         "watering_schedule": [s.model_dump() for s in body.watering_schedule],
         "humidity_threshold_pct": body.humidity_threshold_pct,
+        "humidity_duration_s": body.humidity_duration_s,
     }
     await publish_config(device_id, mqtt_payload)
 

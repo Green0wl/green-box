@@ -5,6 +5,8 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/timers.h"
@@ -25,7 +27,14 @@ static const char *TAG = "mqtt_manager";
 #define RESPONSE_TIMEOUT_MS  10000
 #define MAX_SCHEDULE_SLOTS   8
 #define HUMIDITY_CHECK_MS    (60 * 1000)
+#define HUMIDITY_LOG_MS      (5 * 1000)
 #define SCHEDULE_CHECK_MS    (30 * 1000)
+
+/* Hardware GPIO from schematic */
+#define PUMP1_GPIO           2
+#define PUMP2_GPIO           25
+#define H1_ADC_CHANNEL       ADC_CHANNEL_4  /* IO32 */
+#define H2_ADC_CHANNEL       ADC_CHANNEL_5  /* IO33 */
 
 #define EVT_CONNECTED        BIT0
 #define EVT_DISCONNECTED     BIT1
@@ -50,6 +59,7 @@ static const uint32_t backoff_ms[MAX_RETRIES] = {
 
 typedef struct {
     int  humidity_threshold_pct;
+    int  humidity_duration_s;
     int  num_slots;
     struct { int hour; int min; int duration_s; } slots[MAX_SCHEDULE_SLOTS];
     char config_id[52];
@@ -69,6 +79,8 @@ typedef struct {
 } watering_cmd_t;
 
 static QueueHandle_t s_watering_queue;
+static adc_oneshot_unit_handle_t s_adc_handle;
+static const int pump_gpio[2] = { PUMP1_GPIO, PUMP2_GPIO };
 
 /* ---- Topics ---- */
 
@@ -188,6 +200,22 @@ static int parse_schedule(const char *json_array, port_config_t *pc)
     return pc->num_slots;
 }
 
+/*
+ * Read humidity from CSMS v2.0 sensor via ADC.
+ * Sensor outputs ~1.2V wet, ~2.8V dry (3.3V supply, 12-bit ADC → 0-4095).
+ * Map: high raw = dry = low humidity%.
+ */
+static float read_humidity(adc_channel_t channel)
+{
+    int raw = 0;
+    adc_oneshot_read(s_adc_handle, channel, &raw);
+    /* Linear map: 4095 → 0% (dry), 0 → 100% (wet) */
+    float pct = 100.0f * (1.0f - (float)raw / 4095.0f);
+    if (pct < 0.0f) pct = 0.0f;
+    if (pct > 100.0f) pct = 100.0f;
+    return pct;
+}
+
 static bool wait_bits(EventBits_t bits, uint32_t timeout_ms, EventBits_t *out)
 {
     *out = xEventGroupWaitBits(s_mqtt_events, bits,
@@ -262,13 +290,16 @@ static void publish_watering_event(int port, const char *event_type, const char 
     get_iso_timestamp(ts, sizeof(ts));
     float humidity_stub = 42.0f;
 
+    adc_channel_t ch = (port == 1) ? H1_ADC_CHANNEL : H2_ADC_CHANNEL;
+    float humidity = read_humidity(ch);
+
     char payload[384];
     if (strcmp(event_type, "watering_started") == 0) {
         snprintf(payload, sizeof(payload),
                  "{\"device_id\":\"%s\",\"port\":%d,\"event\":\"%s\","
                  "\"timestamp\":\"%s\",\"trigger\":\"%s\","
                  "\"humidity_at_start_pct\":%.1f,\"planned_duration_s\":%d}",
-                 s_device_id, port, event_type, ts, trigger, humidity_stub, duration_s);
+                 s_device_id, port, event_type, ts, trigger, humidity, duration_s);
     } else {
         snprintf(payload, sizeof(payload),
                  "{\"device_id\":\"%s\",\"port\":%d,\"event\":\"%s\","
@@ -276,7 +307,7 @@ static void publish_watering_event(int port, const char *event_type, const char 
                  "\"actual_duration_s\":%d,\"humidity_at_stop_pct\":%.1f,"
                  "\"stop_reason\":\"%s\"}",
                  s_device_id, port, event_type, ts, trigger,
-                 duration_s, humidity_stub, stop_reason);
+                 duration_s, humidity, stop_reason);
     }
 
     esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 0);
@@ -290,13 +321,16 @@ static void watering_task(void *arg)
         if (xQueueReceive(s_watering_queue, &cmd, portMAX_DELAY) != pdTRUE)
             continue;
 
-        ESP_LOGI(TAG, "STUB: pump %d ON for %ds (trigger=%s)", cmd.port, cmd.duration_s, cmd.trigger);
+        int pin = pump_gpio[cmd.port - 1];
+        ESP_LOGI(TAG, "Pump %d ON (GPIO%d) for %ds (trigger=%s)", cmd.port, pin, cmd.duration_s, cmd.trigger);
+        gpio_set_level(pin, 1);
         led_driver_set(LED_APPLICATION, LED_STATE_CYAN_BLINKING);
         publish_watering_event(cmd.port, "watering_started", cmd.trigger, cmd.duration_s, NULL);
 
         vTaskDelay(pdMS_TO_TICKS(cmd.duration_s * 1000));
 
-        ESP_LOGI(TAG, "STUB: pump %d OFF", cmd.port);
+        gpio_set_level(pin, 0);
+        ESP_LOGI(TAG, "Pump %d OFF (GPIO%d)", cmd.port, pin);
         led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
         publish_watering_event(cmd.port, "watering_stopped", cmd.trigger, cmd.duration_s, "duration_complete");
     }
@@ -335,15 +369,30 @@ static void schedule_check_callback(TimerHandle_t timer)
     }
 }
 
+static void humidity_log_callback(TimerHandle_t timer)
+{
+    float h1 = read_humidity(H1_ADC_CHANNEL);
+    float h2 = read_humidity(H2_ADC_CHANNEL);
+
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+
+    ESP_LOGI(TAG, "[%02d:%02d:%02d] Humidity: H1=%.1f%% H2=%.1f%%",
+             tm.tm_hour, tm.tm_min, tm.tm_sec, h1, h2);
+}
+
 static void humidity_check_callback(TimerHandle_t timer)
 {
-    float humidity = 42.0f; /* TODO: read real sensor */
+    adc_channel_t channels[2] = { H1_ADC_CHANNEL, H2_ADC_CHANNEL };
 
     for (int i = 0; i < 2; i++) {
         port_config_t *pc = &s_ports[i];
-        if (!pc->active || pc->humidity_threshold_pct <= 0) continue;
+        if (!pc->active || pc->humidity_threshold_pct <= 0 || pc->humidity_duration_s <= 0) continue;
+
+        float humidity = read_humidity(channels[i]);
         if (humidity < (float)pc->humidity_threshold_pct) {
-            int duration = pc->num_slots > 0 ? pc->slots[0].duration_s : 30;
+            int duration = pc->humidity_duration_s;
             ESP_LOGI(TAG, "Humidity %.1f%% < threshold %d%% on port %d",
                      humidity, pc->humidity_threshold_pct, i + 1);
             watering_cmd_t cmd = {
@@ -391,25 +440,28 @@ static void handle_config_message(const char *json)
     led_driver_set(LED_APPLICATION, LED_STATE_BLUE_BLINKING);
 
     char config_id[52] = {0};
-    int port = 0, humidity_pct = 0;
+    int port = 0, humidity_pct = 0, humidity_dur = 0;
     char schedule_raw[256] = {0};
 
     if (!json_get_str(json, "config_id", config_id, sizeof(config_id)) ||
-        !json_get_int(json, "port", &port) ||
-        !json_get_int(json, "humidity_threshold_pct", &humidity_pct) ||
-        !json_get_array(json, "watering_schedule", schedule_raw, sizeof(schedule_raw))) {
+        !json_get_int(json, "port", &port)) {
         ESP_LOGW(TAG, "Config validation failed: missing fields");
         publish_config_ack(port > 0 ? port : 1, config_id, "rejected", "missing_fields");
-        led_driver_set(LED_APPLICATION, LED_STATE_ORANGE_STEADY);
+        led_driver_set(LED_APPLICATION, LED_STATE_WHITE_STEADY);
         vTaskDelay(pdMS_TO_TICKS(10000));
         led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
         return;
     }
 
+    /* Optional fields — default to 0 / empty if missing */
+    json_get_int(json, "humidity_threshold_pct", &humidity_pct);
+    json_get_int(json, "humidity_duration_s", &humidity_dur);
+    json_get_array(json, "watering_schedule", schedule_raw, sizeof(schedule_raw));
+
     if (port < 1 || port > 2 || humidity_pct < 0 || humidity_pct > 100) {
         ESP_LOGW(TAG, "Config validation failed: port=%d hum=%d", port, humidity_pct);
         publish_config_ack(port, config_id, "rejected", "invalid_values");
-        led_driver_set(LED_APPLICATION, LED_STATE_ORANGE_STEADY);
+        led_driver_set(LED_APPLICATION, LED_STATE_WHITE_STEADY);
         vTaskDelay(pdMS_TO_TICKS(10000));
         led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
         return;
@@ -425,16 +477,17 @@ static void handle_config_message(const char *json)
         return;
     }
 
-    nvs_manager_set_port_config(port, config_id, schedule_raw, humidity_pct);
+    nvs_manager_set_port_config(port, config_id, schedule_raw, humidity_pct, humidity_dur);
 
     strncpy(pc->config_id, config_id, sizeof(pc->config_id) - 1);
     pc->humidity_threshold_pct = humidity_pct;
+    pc->humidity_duration_s = humidity_dur;
     parse_schedule(schedule_raw, pc);
     pc->active = true;
     pc->last_triggered_min = -1;
 
-    ESP_LOGI(TAG, "Config applied: port=%d config_id=%s threshold=%d%% slots=%d",
-             port, config_id, humidity_pct, pc->num_slots);
+    ESP_LOGI(TAG, "Config applied: port=%d config_id=%s threshold=%d%% hum_dur=%ds slots=%d",
+             port, config_id, humidity_pct, humidity_dur, pc->num_slots);
     for (int i = 0; i < pc->num_slots; i++) {
         ESP_LOGI(TAG, "  slot %d: %02d:%02d for %ds",
                  i, pc->slots[i].hour, pc->slots[i].min, pc->slots[i].duration_s);
@@ -544,7 +597,7 @@ esp_err_t mqtt_manager_register(mqtt_reg_result_t *result)
 
         if (!wait_bits(EVT_DATA_RECEIVED | EVT_DISCONNECTED, RESPONSE_TIMEOUT_MS, &bits)
             || !(bits & EVT_DATA_RECEIVED)) {
-            led_driver_set(LED_APPLICATION, LED_STATE_ORANGE_BLINKING);
+            led_driver_set(LED_APPLICATION, LED_STATE_WHITE_BLINKING);
             esp_mqtt_client_disconnect(client);
             esp_mqtt_client_stop(client);
             esp_mqtt_client_destroy(client);
@@ -596,6 +649,31 @@ esp_err_t mqtt_manager_run(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Init pump GPIOs */
+    for (int i = 0; i < 2; i++) {
+        gpio_config_t io_cfg = {
+            .pin_bit_mask = 1ULL << pump_gpio[i],
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        };
+        gpio_config(&io_cfg);
+        gpio_set_level(pump_gpio[i], 0);
+    }
+    ESP_LOGI(TAG, "Pump GPIOs initialized: P1=IO%d P2=IO%d", PUMP1_GPIO, PUMP2_GPIO);
+
+    /* Init ADC for humidity sensors */
+    adc_oneshot_unit_init_cfg_t adc_cfg = { .unit_id = ADC_UNIT_1 };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_cfg, &s_adc_handle));
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc_handle, H1_ADC_CHANNEL, &chan_cfg));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc_handle, H2_ADC_CHANNEL, &chan_cfg));
+    ESP_LOGI(TAG, "ADC initialized: H1=CH%d(IO32) H2=CH%d(IO33)", H1_ADC_CHANNEL, H2_ADC_CHANNEL);
+
     /* Create watering queue and task */
     s_watering_queue = xQueueCreate(4, sizeof(watering_cmd_t));
     xTaskCreate(watering_task, "watering", 4096, NULL, 5, NULL);
@@ -604,16 +682,17 @@ esp_err_t mqtt_manager_run(void)
     for (int port = 1; port <= 2; port++) {
         int idx = port - 1;
         char cid[52] = {0}, sched[256] = {0};
-        int hum = 0;
+        int hum = 0, hum_dur = 0;
         if (nvs_manager_get_port_config(port, cid, sizeof(cid),
-                                        sched, sizeof(sched), &hum) == ESP_OK) {
+                                        sched, sizeof(sched), &hum, &hum_dur) == ESP_OK) {
             strncpy(s_ports[idx].config_id, cid, sizeof(s_ports[idx].config_id) - 1);
             s_ports[idx].humidity_threshold_pct = hum;
+            s_ports[idx].humidity_duration_s = hum_dur;
             parse_schedule(sched, &s_ports[idx]);
             s_ports[idx].active = true;
             s_ports[idx].last_triggered_min = -1;
-            ESP_LOGI(TAG, "Loaded NVS config for port %d: config_id=%s slots=%d hum=%d%%",
-                     port, cid, s_ports[idx].num_slots, hum);
+            ESP_LOGI(TAG, "Loaded NVS config for port %d: config_id=%s slots=%d hum=%d%% hum_dur=%ds",
+                     port, cid, s_ports[idx].num_slots, hum, hum_dur);
         }
     }
 
@@ -629,11 +708,14 @@ esp_err_t mqtt_manager_run(void)
                                              pdTRUE, NULL, schedule_check_callback);
     TimerHandle_t hum_timer = xTimerCreate("hum_chk", pdMS_TO_TICKS(HUMIDITY_CHECK_MS),
                                            pdTRUE, NULL, humidity_check_callback);
+    TimerHandle_t hum_log_timer = xTimerCreate("hum_log", pdMS_TO_TICKS(HUMIDITY_LOG_MS),
+                                               pdTRUE, NULL, humidity_log_callback);
     xTimerStart(sched_timer, 0);
     xTimerStart(hum_timer, 0);
+    xTimerStart(hum_log_timer, 0);
 
-    ESP_LOGI(TAG, "Phase 3+4 running: configs, schedule checks every %ds, humidity every %ds",
-             SCHEDULE_CHECK_MS / 1000, HUMIDITY_CHECK_MS / 1000);
+    ESP_LOGI(TAG, "Phase 3+4 running: schedule every %ds, humidity check every %ds, humidity log every %ds",
+             SCHEDULE_CHECK_MS / 1000, HUMIDITY_CHECK_MS / 1000, HUMIDITY_LOG_MS / 1000);
 
     /* Main loop: wait for config messages */
     for (;;) {

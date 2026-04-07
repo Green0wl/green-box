@@ -28,7 +28,8 @@ else No saved creds or connection failed
   SSID = device_id (GB-{MAC})\n\
   Password = first 8 hex chars of MAC\n\
   Start temp_monitor (hibernate cycle)\n\
-  Start HTTP server on :80
+  Start HTTP server on :80\n\
+  led(1, blue_blinking)
   note over ESP32: AP credentials derived from MAC address
   USER ->> ESP32: Connect to device AP (for configuration)
   USER -> ESPWEB ++: GET on http://192.168.4.1:80

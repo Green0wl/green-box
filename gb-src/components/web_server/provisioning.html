@@ -55,8 +55,10 @@ form.addEventListener('submit', function(e) {
     btn.textContent = 'Connect';
   };
 
-  var params = new URLSearchParams(new FormData(form)).toString();
-  xhr.send(params);
+  var fd = new FormData(form);
+  var trimmed = new URLSearchParams();
+  fd.forEach(function(v, k) { trimmed.set(k, v.trim()); });
+  xhr.send(trimmed.toString());
 });
 
 var overheat = document.getElementById('overheat');

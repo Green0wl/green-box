@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS device_configs (
     config_id              VARCHAR(50)  NOT NULL UNIQUE,
     port                   SMALLINT     NOT NULL CHECK (port IN (1, 2)),
     watering_schedule      JSONB        NOT NULL,
-    humidity_threshold_pct INTEGER      NOT NULL CHECK (humidity_threshold_pct BETWEEN 0 AND 100),
+    humidity_threshold_pct INTEGER      NOT NULL DEFAULT 0 CHECK (humidity_threshold_pct BETWEEN 0 AND 100),
+    humidity_duration_s   INTEGER      NOT NULL DEFAULT 0,
     status                 VARCHAR(20)  NOT NULL DEFAULT 'pending'
                            CHECK (status IN ('pending', 'pushed', 'applied', 'rejected')),
     created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
