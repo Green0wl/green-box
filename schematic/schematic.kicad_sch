@@ -4748,12 +4748,13 @@
 				(hide yes)
 			)
 		)
-		(property "Value" "VCC 3.3V"
-			(at 157.48 53.34 0)
+		(property "Value" "VCC 5V"
+			(at 160.02 57.1499 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(justify left)
 			)
 		)
 		(property "Footprint" ""
@@ -4948,12 +4949,13 @@
 				(hide yes)
 			)
 		)
-		(property "Value" "VCC 3.3V"
-			(at 107.95 53.34 0)
+		(property "Value" "VCC 5V"
+			(at 110.49 57.1499 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(justify left)
 			)
 		)
 		(property "Footprint" ""

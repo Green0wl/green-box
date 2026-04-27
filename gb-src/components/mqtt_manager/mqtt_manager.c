@@ -78,9 +78,11 @@ typedef struct {
     char trigger[16];
 } watering_cmd_t;
 
-static QueueHandle_t s_watering_queue;
+static QueueHandle_t s_watering_queue[2];   /* one queue per port */
 static adc_oneshot_unit_handle_t s_adc_handle;
 static const int pump_gpio[2] = { PUMP1_GPIO, PUMP2_GPIO };
+static volatile int s_active_pumps;        /* count of pumps currently running */
+static portMUX_TYPE s_pump_mux = portMUX_INITIALIZER_UNLOCKED;
 
 /* ---- Topics ---- */
 
@@ -316,23 +318,33 @@ static void publish_watering_event(int port, const char *event_type, const char 
 
 static void watering_task(void *arg)
 {
+    int port = (int)(uintptr_t)arg;     /* 1 or 2 */
+    int idx = port - 1;
+    int pin = pump_gpio[idx];
     watering_cmd_t cmd;
+
     for (;;) {
-        if (xQueueReceive(s_watering_queue, &cmd, portMAX_DELAY) != pdTRUE)
+        if (xQueueReceive(s_watering_queue[idx], &cmd, portMAX_DELAY) != pdTRUE)
             continue;
 
-        int pin = pump_gpio[cmd.port - 1];
-        ESP_LOGI(TAG, "Pump %d ON (GPIO%d) for %ds (trigger=%s)", cmd.port, pin, cmd.duration_s, cmd.trigger);
+        ESP_LOGI(TAG, "Pump %d ON (GPIO%d) for %ds (trigger=%s)", port, pin, cmd.duration_s, cmd.trigger);
         gpio_set_level(pin, 1);
+        portENTER_CRITICAL(&s_pump_mux);
+        s_active_pumps++;
+        portEXIT_CRITICAL(&s_pump_mux);
         led_driver_set(LED_APPLICATION, LED_STATE_CYAN_BLINKING);
-        publish_watering_event(cmd.port, "watering_started", cmd.trigger, cmd.duration_s, NULL);
+        publish_watering_event(port, "watering_started", cmd.trigger, cmd.duration_s, NULL);
 
         vTaskDelay(pdMS_TO_TICKS(cmd.duration_s * 1000));
 
         gpio_set_level(pin, 0);
-        ESP_LOGI(TAG, "Pump %d OFF (GPIO%d)", cmd.port, pin);
-        led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
-        publish_watering_event(cmd.port, "watering_stopped", cmd.trigger, cmd.duration_s, "duration_complete");
+        ESP_LOGI(TAG, "Pump %d OFF (GPIO%d)", port, pin);
+        portENTER_CRITICAL(&s_pump_mux);
+        int remaining = --s_active_pumps;
+        portEXIT_CRITICAL(&s_pump_mux);
+        if (remaining == 0)
+            led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
+        publish_watering_event(port, "watering_stopped", cmd.trigger, cmd.duration_s, "duration_complete");
     }
 }
 
@@ -361,7 +373,7 @@ static void schedule_check_callback(TimerHandle_t timer)
                     .duration_s = pc->slots[s].duration_s,
                 };
                 strncpy(cmd.trigger, "schedule", sizeof(cmd.trigger));
-                xQueueSend(s_watering_queue, &cmd, 0);
+                xQueueSend(s_watering_queue[i], &cmd, 0);
                 ESP_LOGI(TAG, "Schedule match %02d:%02d → port %d queued",
                          cur_hour, cur_min, i + 1);
             }
@@ -400,7 +412,7 @@ static void humidity_check_callback(TimerHandle_t timer)
                 .duration_s = duration,
             };
             strncpy(cmd.trigger, "humidity", sizeof(cmd.trigger));
-            xQueueSend(s_watering_queue, &cmd, 0);
+            xQueueSend(s_watering_queue[i], &cmd, 0);
         }
     }
 }
@@ -674,9 +686,11 @@ esp_err_t mqtt_manager_run(void)
     ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc_handle, H2_ADC_CHANNEL, &chan_cfg));
     ESP_LOGI(TAG, "ADC initialized: H1=CH%d(IO32) H2=CH%d(IO33)", H1_ADC_CHANNEL, H2_ADC_CHANNEL);
 
-    /* Create watering queue and task */
-    s_watering_queue = xQueueCreate(4, sizeof(watering_cmd_t));
-    xTaskCreate(watering_task, "watering", 4096, NULL, 5, NULL);
+    /* Create per-port watering queues and tasks (allows parallel watering) */
+    s_watering_queue[0] = xQueueCreate(4, sizeof(watering_cmd_t));
+    s_watering_queue[1] = xQueueCreate(4, sizeof(watering_cmd_t));
+    xTaskCreate(watering_task, "watering_p1", 4096, (void *)(uintptr_t)1, 5, NULL);
+    xTaskCreate(watering_task, "watering_p2", 4096, (void *)(uintptr_t)2, 5, NULL);
 
     /* Load saved configs from NVS */
     for (int port = 1; port <= 2; port++) {
