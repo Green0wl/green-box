@@ -1,3 +1,15 @@
+"""
+Server-rendered HTML views (Jinja2 templates).
+
+Two pages: the device list at `/` and the per-device detail at
+`/devices/{id}`. The detail page auto-refreshes every 10 s via a
+`<meta http-equiv="refresh">` so users see live updates without
+WebSocket plumbing.
+
+Views query the DB directly rather than calling the REST API — this
+avoids serialise/deserialise round-trips and keeps the UI fast.
+"""
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -13,6 +25,7 @@ templates = Jinja2Templates(directory="templates")
 
 @router.get("/", response_class=HTMLResponse)
 async def device_list_page(request: Request, session: AsyncSession = Depends(get_session)):
+    """Index page: table of all registered devices."""
     result = await session.execute(text(
         "SELECT device_id, status, firmware_version, hardware_revision, last_seen_at "
         "FROM devices ORDER BY last_seen_at DESC"
@@ -30,6 +43,9 @@ async def device_detail_page(
     device_id: str,
     session: AsyncSession = Depends(get_session),
 ):
+    """Device detail page: per-port config panels (with push form) and
+    the most recent watering events. DISTINCT ON (port) returns the
+    latest config per port regardless of status."""
     device = await session.get(Device, device_id)
     if not device:
         return HTMLResponse("Device not found", status_code=404)

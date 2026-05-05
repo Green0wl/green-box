@@ -1,3 +1,16 @@
+"""
+SQLAlchemy ORM models — one class per table from `server/sql/init.sql`.
+
+Mapping goals:
+  - `device_configs` is append-only; status transitions from pending →
+    pushed → applied/rejected and is the source of truth for config
+    history per port.
+  - `watering_events` stores both `device_timestamp` (ESP32 clock) and
+    `received_at` (server clock) so post-hoc analysis can detect drift.
+  - All datetimes are stored as `TIMESTAMPTZ` (UTC); the firmware sends
+    ISO 8601 with explicit "Z".
+"""
+
 from datetime import datetime, time
 from decimal import Decimal
 

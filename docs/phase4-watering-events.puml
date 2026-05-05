@@ -143,14 +143,50 @@ else
       MQTTBROKER -->> MQTTPUB --: **PUBACK**
     end
   end
+else
+  == 4.3 Periodic Humidity Telemetry ==
+
+  participant "ThingsBoard\nMQTT Broker" as TBBROKER
+
+  loop every 30 s
+    ESP32 -> ESP32 ++: Read humidity sensors\nH1 + H2
+    ESP32 -->> ESP32 --
+
+    MQTTPUB -> MQTTBROKER ++: **PUBLISH** (Mosquitto)\n\
+|_ topic   = "greenbox/{device_id}/event/humidity"\n\
+|_ QoS     = 1\n\
+|_ retain  = false\n\
+|_ payload = {\n\
+|_   "device_id": "GB-XXXXXXXXXXXX",\n\
+|_   "timestamp": "2026-03-05T06:00:30Z",\n\
+|_   "humidity_h1_pct": 38.2,\n\
+|_   "humidity_h2_pct": 41.7\n\
+|_ }
+    MQTTBROKER -->> MQTTPUB --: **PUBACK**
+
+    MQTTPUB -> TBBROKER ++: **PUBLISH** (ThingsBoard)\n\
+|_ topic   = "v1/devices/me/telemetry"\n\
+|_ QoS     = 1\n\
+|_ payload = {\n\
+|_   "humidity_h1": 38.2,\n\
+|_   "humidity_h2": 41.7\n\
+|_ }
+    TBBROKER -->> MQTTPUB --: **PUBACK**
+  end
 end
 
-== 4.3 Server-side Event Processing ==
+== 4.4 Server-side Event Processing ==
 
 note over MQTTBROKER, Server
   Server is subscribed to:
-  **greenbox/+/event/watering** (wildcard)
-  Processes each incoming event message.
+  **greenbox/+/event/watering** and
+  **greenbox/+/event/humidity** (wildcards).
+  Watering events are stored in PostgreSQL.
+  Humidity telemetry on Mosquitto only
+  refreshes last_seen_at. Cloud
+  visualization happens via the second
+  MQTT connection from the device to
+  ThingsBoard (above).
 end note
 
 MQTTBROKER -> MQTTBROKER ++

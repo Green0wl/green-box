@@ -1,3 +1,17 @@
+/*
+ * Two-LED status driver.
+ *
+ * Each LED is a common-cathode RGB LED_KRGB. We drive each R/G/B channel
+ * as a plain GPIO (HIGH = on, LOW = off) — no PWM. PWM was tried first
+ * but rejected for MVP: the 7 distinct status colours we need (red,
+ * green, yellow, white, purple, blue, cyan) are all binary-RGB
+ * combinations, so PWM adds complexity for no functional benefit.
+ *
+ * Blinking is implemented by a per-LED FreeRTOS auto-reload timer that
+ * toggles between "on with current colour" and OFF. Different blink
+ * patterns (fast / slow / double) just use different timer periods.
+ */
+
 #include "led_driver.h"
 #include "esp_log.h"
 #include "driver/gpio.h"

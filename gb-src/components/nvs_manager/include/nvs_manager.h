@@ -10,6 +10,10 @@ esp_err_t nvs_manager_get_wifi(char *ssid, size_t ssid_len, char *password, size
 esp_err_t nvs_manager_set_mqtt(const char *host, uint16_t port);
 esp_err_t nvs_manager_get_mqtt(char *host, size_t host_len, uint16_t *port);
 
+/* ThingsBoard access token (optional; empty string → telemetry disabled). */
+esp_err_t nvs_manager_set_tb_token(const char *token);
+esp_err_t nvs_manager_get_tb_token(char *token, size_t token_len);
+
 /* Per-port config: config_id, raw schedule JSON, humidity threshold */
 esp_err_t nvs_manager_set_port_config(int port, const char *config_id,
                                       const char *schedule_json,

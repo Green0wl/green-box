@@ -1,3 +1,17 @@
+/*
+ * WiFi state machine for both AP-only provisioning and STA connection
+ * attempts. Runs in APSTA mode so a user can stay connected to the
+ * provisioning AP while we test their credentials against the home WiFi.
+ *
+ * The AP SSID and password are derived from the device MAC so every unit
+ * has unique, predictable credentials printed on its label.
+ *
+ * Connection attempts are guarded by an `s_connecting` flag: stale
+ * disconnect events from `esp_wifi_disconnect()` (which we call to drop
+ * any previous attempt) must not be mistaken for the new attempt's
+ * outcome. This is a known async-event hazard in ESP-IDF.
+ */
+
 #include "wifi_manager.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -99,6 +113,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+/*
+ * Bring the WiFi stack up in APSTA mode and start the soft-AP so the
+ * provisioning HTTP server has something to serve over. STA stays idle
+ * until wifi_manager_try_connect() is called.
+ */
 esp_err_t wifi_manager_init(void)
 {
     s_wifi_event_group = xEventGroupCreate();
@@ -126,6 +145,16 @@ esp_err_t wifi_manager_init(void)
     return ESP_OK;
 }
 
+/*
+ * Attempt an STA connection with the given credentials. Blocks up to 15 s
+ * until either an IP is obtained (success) or a disconnect event with a
+ * meaningful reason arrives (wrong password / AP not found / timeout).
+ *
+ * The 100 ms vTaskDelay below is intentional: it lets the disconnect
+ * event from the preceding esp_wifi_disconnect() drain *before* we clear
+ * the event-group bits and arm s_connecting. Without this, a stale event
+ * could short-circuit the new attempt.
+ */
 esp_err_t wifi_manager_try_connect(const char *ssid, const char *password,
                                    wifi_connect_result_t *result)
 {

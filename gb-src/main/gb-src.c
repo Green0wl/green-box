@@ -1,3 +1,17 @@
+/*
+ * GreenBox firmware entry point.
+ *
+ * Orchestrates the four phases defined in docs/global-sequence.puml:
+ *   Phase 1 - WiFi provisioning (or auto-reconnect with saved credentials)
+ *   Phase 1.5 - SNTP time synchronisation (required for schedule logic and
+ *               UTC timestamps in MQTT events)
+ *   Phase 2 - MQTT registration with the application server
+ *   Phase 3+4 - Config push handling and watering control loop (blocks forever)
+ *
+ * The RST button monitor and overheat (hibernate) callbacks run in parallel
+ * background tasks for the entire device lifetime.
+ */
+
 #include "nvs_manager.h"
 #include "led_driver.h"
 #include "wifi_manager.h"
@@ -16,6 +30,10 @@
 static const char *TAG = "app_main";
 static EventGroupHandle_t s_prov_done;
 
+/*
+ * RST button held for 5 s: nuke all credentials and restart so the device
+ * re-enters provisioning mode on next boot.
+ */
 static void on_rst_button(void)
 {
     ESP_LOGW(TAG, "RST button: erasing WiFi credentials and restarting");
@@ -25,6 +43,12 @@ static void on_rst_button(void)
     esp_restart();
 }
 
+/*
+ * Hibernate-enter: shut down WiFi and the HTTP server. The order matters —
+ * led_driver_set(PURPLE) is applied by temp_monitor *after* this callback
+ * so that esp_wifi_stop() (which can reset the GPIO mux on strapping pins
+ * like IO5 = LED2 Blue) does not clobber the LED state.
+ */
 static void on_hibernate_enter(void)
 {
     ESP_LOGW(TAG, "Hibernate: stopping web server and WiFi");
@@ -33,6 +57,8 @@ static void on_hibernate_enter(void)
     wifi_manager_stop();
 }
 
+/* Hibernate-exit: reverse of enter. AP comes up again so a user can still
+ * provision while the device is recovering from overheat. */
 static void on_hibernate_exit(void)
 {
     ESP_LOGI(TAG, "Hibernate exit: restarting WiFi AP and web server");
@@ -41,6 +67,10 @@ static void on_hibernate_exit(void)
     led_driver_set(LED_NETWORK, LED_STATE_BLUE_BLINKING);
 }
 
+/*
+ * Try to connect with credentials from NVS. Returns true if STA is up and
+ * we have an IP, false if no creds are saved or the connection failed.
+ */
 static bool try_saved_credentials(void)
 {
     char ssid[33] = {0};
@@ -71,14 +101,22 @@ static bool try_saved_credentials(void)
 
 void app_main(void)
 {
-    /* ---- Phase 1: WiFi provisioning ---- */
+    /* ---- Phase 1: bring up subsystems and either auto-connect or
+     * launch the provisioning AP + HTTP server.
+     *
+     * Init order matters: WiFi must initialise before the LED driver
+     * because the WiFi stack briefly uses some LED GPIOs (IO5 is a
+     * strapping pin that the WiFi RF init touches). */
     ESP_ERROR_CHECK(nvs_manager_init());
     ESP_ERROR_CHECK(wifi_manager_init());
     ESP_ERROR_CHECK(led_driver_init());
     ESP_ERROR_CHECK(rst_button_start(on_rst_button));
 
     if (!try_saved_credentials()) {
-        /* No saved creds or they failed — run provisioning server */
+        /* No saved creds or they failed — run the provisioning server.
+         * temp_monitor runs in parallel: if the device overheats while
+         * waiting for the user to submit the form, we shut the AP down
+         * (callbacks above) and resume when temperature normalises. */
         temp_monitor_callbacks_t cb = {
             .on_hibernate_enter = on_hibernate_enter,
             .on_hibernate_exit  = on_hibernate_exit,
@@ -102,7 +140,9 @@ void app_main(void)
     wifi_manager_stop_ap();
     ESP_LOGI(TAG, "Provisioning complete, WiFi connected");
 
-    /* Sync time via SNTP */
+    /* ---- SNTP: required before MQTT so timestamps in events are real.
+     * 15 attempts with 1 s timeout each. We continue even if all attempts
+     * fail (clock will simply read 1970-01-01). */
     ESP_LOGI(TAG, "Syncing time via SNTP...");
     esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     esp_netif_sntp_init(&sntp_cfg);
@@ -116,7 +156,8 @@ void app_main(void)
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 
-    /* ---- Phase 2: MQTT registration ---- */
+    /* ---- Phase 2: register with the server. Blocks until success or
+     * MAX_RETRIES (10 attempts with exponential backoff up to 60 s). */
     mqtt_reg_result_t reg_result;
     ESP_ERROR_CHECK(mqtt_manager_register(&reg_result));
 
@@ -127,6 +168,8 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Device registered, entering Phase 3+4");
 
-    /* ---- Phase 3+4: Config + Watering (blocks forever) ---- */
+    /* ---- Phase 3+4: keep MQTT session open, listen for config pushes
+     * from the server, run schedule + humidity timers, drive pumps via
+     * per-port FreeRTOS tasks. Blocks forever. */
     mqtt_manager_run();
 }

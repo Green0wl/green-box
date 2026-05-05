@@ -1,3 +1,15 @@
+"""
+MQTT client lifecycle for the application server.
+
+Subscribes to four wildcard topics (registration, config-ack, watering
+events, humidity telemetry) and dispatches each message to its handler
+in `app.handlers`. Reconnects with a 5 s delay if the broker drops the
+connection.
+
+The module-level `_client` lets REST endpoints (`POST /config`) publish
+config-push messages without owning their own MQTT connection.
+"""
+
 import asyncio
 import json
 import logging
@@ -5,7 +17,12 @@ import logging
 import aiomqtt
 
 from app.config import settings
-from app.handlers import handle_config_ack, handle_registration, handle_watering_event
+from app.handlers import (
+    handle_config_ack,
+    handle_humidity_event,
+    handle_registration,
+    handle_watering_event,
+)
 
 log = logging.getLogger(__name__)
 
@@ -13,6 +30,7 @@ _client: aiomqtt.Client | None = None
 
 
 async def mqtt_loop():
+    """Long-running subscribe loop. Started by the FastAPI lifespan."""
     global _client
 
     while True:
@@ -29,6 +47,7 @@ async def mqtt_loop():
                 await client.subscribe("greenbox/+/reg/request", qos=1)
                 await client.subscribe("greenbox/+/config/ack", qos=1)
                 await client.subscribe("greenbox/+/event/watering", qos=1)
+                await client.subscribe("greenbox/+/event/humidity", qos=1)
 
                 async for message in client.messages:
                     parts = str(message.topic).split("/")
@@ -43,6 +62,8 @@ async def mqtt_loop():
                             await handle_config_ack(device_id, message.payload)
                         elif domain == "event" and action == "watering":
                             await handle_watering_event(device_id, message.payload)
+                        elif domain == "event" and action == "humidity":
+                            await handle_humidity_event(device_id, message.payload)
                     except Exception:
                         log.exception("Error handling %s/%s from %s", domain, action, device_id)
 
@@ -56,6 +77,8 @@ async def mqtt_loop():
 
 
 async def publish_config(device_id: str, payload: dict):
+    """Publish a config-push to a device. retain=true ensures offline
+    devices receive the latest config when they next connect."""
     if _client is None:
         raise RuntimeError("MQTT client not connected")
     topic = f"greenbox/{device_id}/config/push"

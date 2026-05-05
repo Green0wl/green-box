@@ -1,3 +1,22 @@
+/*
+ * MQTT-driven Phase 2 (registration), Phase 3 (config push handling) and
+ * Phase 4 (watering execution + telemetry).
+ *
+ * Single MQTT 5.0 client (espressif/mqtt managed component). Stays
+ * connected for the device's entire post-Phase-1 lifetime. On broker
+ * restart, esp-mqtt reconnects automatically and we re-subscribe to the
+ * config-push topic from the MQTT_EVENT_CONNECTED handler.
+ *
+ * Watering runs in two dedicated FreeRTOS tasks (one per port), each
+ * reading from its own queue. This makes the two pumps independent —
+ * port 1 can water while port 2 is also watering. Timer callbacks are
+ * non-blocking and just enqueue commands.
+ *
+ * Hardware:
+ *   - PUMP1_GPIO / PUMP2_GPIO  → SS8050 NPN base, active HIGH
+ *   - H1/H2 humidity sensors   → ADC1_CH4 / ADC1_CH5 (12-bit, 12 dB att.)
+ */
+
 #include "mqtt_manager.h"
 #include "mqtt_client.h"
 #include "nvs_manager.h"
@@ -26,9 +45,16 @@ static const char *TAG = "mqtt_manager";
 #define MAX_RETRIES          10
 #define RESPONSE_TIMEOUT_MS  10000
 #define MAX_SCHEDULE_SLOTS   8
-#define HUMIDITY_CHECK_MS    (60 * 1000)
-#define HUMIDITY_LOG_MS      (5 * 1000)
-#define SCHEDULE_CHECK_MS    (30 * 1000)
+#define HUMIDITY_CHECK_MS      (60 * 1000)
+#define HUMIDITY_LOG_MS        (5 * 1000)
+#define HUMIDITY_TELEMETRY_MS  (30 * 1000)
+#define SCHEDULE_CHECK_MS      (30 * 1000)
+
+/* ThingsBoard MQTT broker is assumed to run on the same host as Mosquitto
+ * (provisioned via the form), on a non-conflicting port. The
+ * docker-compose.yml maps the container's 1883 to host 1884. */
+#define TB_MQTT_PORT           1884
+#define TB_TELEMETRY_TOPIC     "v1/devices/me/telemetry"
 
 /* Hardware GPIO from schematic */
 #define PUMP1_GPIO           2
@@ -46,6 +72,9 @@ static const char *TAG = "mqtt_manager";
 
 static EventGroupHandle_t s_mqtt_events;
 static esp_mqtt_client_handle_t s_client;
+/* Optional second MQTT client connected to ThingsBoard for direct
+ * telemetry. NULL if no token is configured. */
+static esp_mqtt_client_handle_t s_tb_client;
 static char s_device_id[20];
 static char s_response_buf[512];
 static char s_config_buf[512];
@@ -69,6 +98,26 @@ typedef struct {
 } port_config_t;
 
 static port_config_t s_ports[2];
+
+/* ---- Per-port sensor health ---- */
+
+/*
+ * The CSMS v2.0 reads at the ADC rails (0% / 100%) only at hardware
+ * faults: floating input (sensor unplugged, ADC pin pulled by leakage)
+ * or a short to GND/VCC. Three consecutive minute-cadence reads at the
+ * rail flag the sensor as faulty. A subsequent in-band reading clears
+ * the fault. While faulty, humidity-triggered watering is suppressed
+ * for that port; schedule-triggered watering still runs (it does not
+ * depend on the sensor) but the recorded humidity becomes JSON null.
+ */
+#define SENSOR_FAULT_THRESHOLD 3
+
+typedef struct {
+    int  consecutive_extreme;
+    bool faulty;
+} sensor_health_t;
+
+static sensor_health_t s_sensor_health[2];
 
 /* ---- Watering queue ---- */
 
@@ -206,16 +255,73 @@ static int parse_schedule(const char *json_array, port_config_t *pc)
  * Read humidity from CSMS v2.0 sensor via ADC.
  * Sensor outputs ~1.2V wet, ~2.8V dry (3.3V supply, 12-bit ADC → 0-4095).
  * Map: high raw = dry = low humidity%.
+ *
+ * Returns 0..100 on success or HUMIDITY_INVALID (-1.0f) when the ADC
+ * read itself fails — the caller must check the sentinel before using
+ * the value (publishing JSON, comparing to a threshold, etc.).
  */
+#define HUMIDITY_INVALID (-1.0f)
+
 static float read_humidity(adc_channel_t channel)
 {
     int raw = 0;
-    adc_oneshot_read(s_adc_handle, channel, &raw);
+    esp_err_t err = adc_oneshot_read(s_adc_handle, channel, &raw);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ADC read failed on channel %d: %s",
+                 channel, esp_err_to_name(err));
+        return HUMIDITY_INVALID;
+    }
     /* Linear map: 4095 → 0% (dry), 0 → 100% (wet) */
     float pct = 100.0f * (1.0f - (float)raw / 4095.0f);
     if (pct < 0.0f) pct = 0.0f;
     if (pct > 100.0f) pct = 100.0f;
     return pct;
+}
+
+/*
+ * Update the per-port sensor health based on a new reading. A reading
+ * pinned to the ADC rails (≤0.5% or ≥99.5%) for SENSOR_FAULT_THRESHOLD
+ * consecutive checks marks the sensor as faulty; any in-band reading
+ * clears the fault. ADC hard errors (HUMIDITY_INVALID) count as
+ * extreme.
+ */
+static void update_sensor_health(int port_idx, float pct)
+{
+    if (port_idx < 0 || port_idx > 1) return;
+    sensor_health_t *h = &s_sensor_health[port_idx];
+
+    bool extreme = (pct == HUMIDITY_INVALID) || (pct <= 0.5f) || (pct >= 99.5f);
+    if (extreme) {
+        h->consecutive_extreme++;
+        if (h->consecutive_extreme == SENSOR_FAULT_THRESHOLD) {
+            h->faulty = true;
+            ESP_LOGW(TAG, "Port %d sensor FAULTY (%d consecutive rail reads)",
+                     port_idx + 1, h->consecutive_extreme);
+        }
+    } else {
+        if (h->faulty) {
+            ESP_LOGI(TAG, "Port %d sensor recovered (reading=%.1f%%)",
+                     port_idx + 1, pct);
+        }
+        h->consecutive_extreme = 0;
+        h->faulty = false;
+    }
+}
+
+static bool is_sensor_faulty(int port_idx)
+{
+    return (port_idx >= 0 && port_idx <= 1) && s_sensor_health[port_idx].faulty;
+}
+
+/* Format a humidity value for JSON output: numeric or "null" if invalid. */
+static void humidity_to_json(float pct, char *out, size_t out_len)
+{
+    if (pct == HUMIDITY_INVALID) {
+        strncpy(out, "null", out_len);
+        out[out_len - 1] = '\0';
+    } else {
+        snprintf(out, out_len, "%.1f", pct);
+    }
 }
 
 static bool wait_bits(EventBits_t bits, uint32_t timeout_ms, EventBits_t *out)
@@ -228,6 +334,18 @@ static bool wait_bits(EventBits_t bits, uint32_t timeout_ms, EventBits_t *out)
 
 /* ---- MQTT event handler ---- */
 
+/*
+ * esp-mqtt event dispatcher. Sets event-group bits so the registration
+ * state machine and the config-push wait loop can synchronise.
+ *
+ * On (re)connect we re-subscribe to the config topic so the device
+ * keeps receiving pushes after a broker restart. s_running ensures we
+ * only do this in Phases 3+4 — during Phase 2 the registration code
+ * subscribes to /reg/response itself.
+ *
+ * MQTT_EVENT_DATA arrives on multiple topics (reg/response and
+ * config/push); we route by inspecting the topic substring.
+ */
 static void mqtt_event_handler(void *arg, esp_event_base_t base,
                                 int32_t event_id, void *event_data)
 {
@@ -290,32 +408,49 @@ static void publish_watering_event(int port, const char *event_type, const char 
 
     char ts[32];
     get_iso_timestamp(ts, sizeof(ts));
-    float humidity_stub = 42.0f;
 
     adc_channel_t ch = (port == 1) ? H1_ADC_CHANNEL : H2_ADC_CHANNEL;
     float humidity = read_humidity(ch);
+
+    /* Faulty sensor → emit JSON null instead of a misleading 0/100 */
+    char humidity_str[16];
+    if (is_sensor_faulty(port - 1)) {
+        humidity_to_json(HUMIDITY_INVALID, humidity_str, sizeof(humidity_str));
+    } else {
+        humidity_to_json(humidity, humidity_str, sizeof(humidity_str));
+    }
 
     char payload[384];
     if (strcmp(event_type, "watering_started") == 0) {
         snprintf(payload, sizeof(payload),
                  "{\"device_id\":\"%s\",\"port\":%d,\"event\":\"%s\","
                  "\"timestamp\":\"%s\",\"trigger\":\"%s\","
-                 "\"humidity_at_start_pct\":%.1f,\"planned_duration_s\":%d}",
-                 s_device_id, port, event_type, ts, trigger, humidity, duration_s);
+                 "\"humidity_at_start_pct\":%s,\"planned_duration_s\":%d}",
+                 s_device_id, port, event_type, ts, trigger, humidity_str, duration_s);
     } else {
         snprintf(payload, sizeof(payload),
                  "{\"device_id\":\"%s\",\"port\":%d,\"event\":\"%s\","
                  "\"timestamp\":\"%s\",\"trigger\":\"%s\","
-                 "\"actual_duration_s\":%d,\"humidity_at_stop_pct\":%.1f,"
+                 "\"actual_duration_s\":%d,\"humidity_at_stop_pct\":%s,"
                  "\"stop_reason\":\"%s\"}",
                  s_device_id, port, event_type, ts, trigger,
-                 duration_s, humidity, stop_reason);
+                 duration_s, humidity_str, stop_reason);
     }
 
     esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 0);
     ESP_LOGI(TAG, "Watering event: port=%d %s trigger=%s", port, event_type, trigger);
 }
 
+/*
+ * Per-port watering task. One instance per pump (port 1 and port 2),
+ * each with its own queue. Reads commands from the queue, drives the
+ * pump GPIO HIGH, sleeps for the requested duration, then drives LOW.
+ *
+ * LED 2 stays cyan-blinking while at least one pump is active and
+ * returns to green-steady only when the last pump finishes (the
+ * s_active_pumps counter, protected by s_pump_mux, makes this safe
+ * across the two parallel tasks).
+ */
 static void watering_task(void *arg)
 {
     int port = (int)(uintptr_t)arg;     /* 1 or 2 */
@@ -350,6 +485,16 @@ static void watering_task(void *arg)
 
 /* ---- Timer callbacks (non-blocking, post to queue) ---- */
 
+/*
+ * Scheduled-watering check, runs every SCHEDULE_CHECK_MS (30 s). For
+ * each port, walk the configured slots and compare against the current
+ * UTC HH:MM. On a match, enqueue a watering command for that port's
+ * task.
+ *
+ * `last_triggered_min` (a minute-of-day integer) prevents the same slot
+ * from firing twice if the 30 s tick happens to land twice in the
+ * matching minute.
+ */
 static void schedule_check_callback(TimerHandle_t timer)
 {
     time_t now = time(NULL);
@@ -390,23 +535,149 @@ static void humidity_log_callback(TimerHandle_t timer)
     struct tm tm;
     gmtime_r(&now, &tm);
 
-    ESP_LOGI(TAG, "[%02d:%02d:%02d] Humidity: H1=%.1f%% H2=%.1f%%",
-             tm.tm_hour, tm.tm_min, tm.tm_sec, h1, h2);
+    char h1_str[16], h2_str[16];
+    humidity_to_json(h1, h1_str, sizeof(h1_str));
+    humidity_to_json(h2, h2_str, sizeof(h2_str));
+
+    ESP_LOGI(TAG, "[%02d:%02d:%02d] Humidity: H1=%s%% H2=%s%%%s%s",
+             tm.tm_hour, tm.tm_min, tm.tm_sec, h1_str, h2_str,
+             is_sensor_faulty(0) ? " [H1 FAULT]" : "",
+             is_sensor_faulty(1) ? " [H2 FAULT]" : "");
+}
+
+/*
+ * Periodically publish humidity telemetry over MQTT so that the cloud
+ * dashboard (ThingsBoard) can plot continuous humidity time-series even
+ * when no watering event is happening. The DB is intentionally NOT updated
+ * here — high-rate telemetry belongs in the time-series store, not the
+ * relational watering_events table.
+ */
+static void humidity_telemetry_callback(TimerHandle_t timer)
+{
+    float h1 = read_humidity(H1_ADC_CHANNEL);
+    float h2 = read_humidity(H2_ADC_CHANNEL);
+
+    /* Faulty-sensor readings are emitted as JSON null so subscribers
+     * (server, ThingsBoard) can distinguish "0% (truly dry)" from
+     * "sensor unplugged". */
+    char h1_str[16], h2_str[16];
+    humidity_to_json(is_sensor_faulty(0) ? HUMIDITY_INVALID : h1,
+                     h1_str, sizeof(h1_str));
+    humidity_to_json(is_sensor_faulty(1) ? HUMIDITY_INVALID : h2,
+                     h2_str, sizeof(h2_str));
+
+    /* Publish to Mosquitto on the application topic so the server can
+     * mark the device as alive even when the TB connection is down. */
+    char topic[64];
+    snprintf(topic, sizeof(topic), "greenbox/%s/event/humidity", s_device_id);
+
+    char ts[32];
+    get_iso_timestamp(ts, sizeof(ts));
+
+    char payload[192];
+    snprintf(payload, sizeof(payload),
+             "{\"device_id\":\"%s\",\"timestamp\":\"%s\","
+             "\"humidity_h1_pct\":%s,\"humidity_h2_pct\":%s}",
+             s_device_id, ts, h1_str, h2_str);
+
+    esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 0);
+
+    /* Publish directly to ThingsBoard telemetry topic if a token was
+     * configured during provisioning. ThingsBoard expects a flat
+     * key/value object on v1/devices/me/telemetry. */
+    if (s_tb_client) {
+        char tb_payload[128];
+        snprintf(tb_payload, sizeof(tb_payload),
+                 "{\"humidity_h1\":%s,\"humidity_h2\":%s}", h1_str, h2_str);
+        esp_mqtt_client_publish(s_tb_client, TB_TELEMETRY_TOPIC,
+                                tb_payload, 0, 1, 0);
+    }
+}
+
+/*
+ * Open a second MQTT connection to the ThingsBoard broker if a token
+ * was provisioned via NVS. ThingsBoard MQTT auth uses the device access
+ * token as the username (no password). We assume TB runs on the same
+ * host as Mosquitto on TB_MQTT_PORT (1884 in the bundled
+ * docker-compose). On any failure we silently disable telemetry —
+ * the device must keep working even if cloud forwarding is broken.
+ */
+static void thingsboard_mqtt_start(void)
+{
+    char token[64] = {0};
+    if (nvs_manager_get_tb_token(token, sizeof(token)) != ESP_OK ||
+        token[0] == '\0') {
+        ESP_LOGI(TAG, "ThingsBoard token not set, telemetry disabled");
+        return;
+    }
+
+    char mqtt_host[128] = {0};
+    uint16_t mqtt_port = 1883;
+    nvs_manager_get_mqtt(mqtt_host, sizeof(mqtt_host), &mqtt_port);
+    if (mqtt_host[0] == '\0') return;
+
+    char tb_uri[160];
+    snprintf(tb_uri, sizeof(tb_uri), "mqtt://%s:%u", mqtt_host, TB_MQTT_PORT);
+
+    esp_mqtt_client_config_t cfg = {
+        .broker.address.uri = tb_uri,
+        .credentials = {
+            .client_id = s_device_id,
+            .username  = token,
+            /* ThingsBoard uses an empty password; the token is the username */
+        },
+        .session = {
+            .protocol_ver = MQTT_PROTOCOL_V_5,
+            .keepalive = 60,
+        },
+        .network.timeout_ms = 10000,
+    };
+
+    s_tb_client = esp_mqtt_client_init(&cfg);
+    if (!s_tb_client) {
+        ESP_LOGW(TAG, "Failed to init ThingsBoard MQTT client");
+        return;
+    }
+    if (esp_mqtt_client_start(s_tb_client) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start ThingsBoard MQTT client");
+        esp_mqtt_client_destroy(s_tb_client);
+        s_tb_client = NULL;
+        return;
+    }
+    ESP_LOGI(TAG, "ThingsBoard MQTT started: %s", tb_uri);
 }
 
 static void humidity_check_callback(TimerHandle_t timer)
 {
     adc_channel_t channels[2] = { H1_ADC_CHANNEL, H2_ADC_CHANNEL };
 
+    /* Read both sensors first so health is updated even for ports
+     * without an active humidity trigger. This is what feeds the
+     * SENSOR_FAULT_THRESHOLD counter; a faulty sensor is marked the
+     * minute its third consecutive rail-pinned read lands here. */
+    float readings[2];
+    for (int i = 0; i < 2; i++) {
+        readings[i] = read_humidity(channels[i]);
+        update_sensor_health(i, readings[i]);
+    }
+
     for (int i = 0; i < 2; i++) {
         port_config_t *pc = &s_ports[i];
         if (!pc->active || pc->humidity_threshold_pct <= 0 || pc->humidity_duration_s <= 0) continue;
 
-        float humidity = read_humidity(channels[i]);
-        if (humidity < (float)pc->humidity_threshold_pct) {
+        /* Suppress humidity-triggered watering when the sensor is
+         * known-faulty: a stuck-at-0% reading would otherwise make
+         * the pump run on every check. Schedule-triggered watering
+         * stays unaffected — it does not depend on the sensor. */
+        if (is_sensor_faulty(i)) {
+            ESP_LOGW(TAG, "Port %d humidity trigger SUPPRESSED (sensor faulty)", i + 1);
+            continue;
+        }
+
+        if (readings[i] < (float)pc->humidity_threshold_pct) {
             int duration = pc->humidity_duration_s;
             ESP_LOGI(TAG, "Humidity %.1f%% < threshold %d%% on port %d",
-                     humidity, pc->humidity_threshold_pct, i + 1);
+                     readings[i], pc->humidity_threshold_pct, i + 1);
             watering_cmd_t cmd = {
                 .port = i + 1,
                 .duration_s = duration,
@@ -446,6 +717,16 @@ static void publish_config_ack(int port, const char *config_id, const char *stat
     ESP_LOGI(TAG, "Config ack: config_id=%s status=%s", config_id, status);
 }
 
+/*
+ * Process a /config/push message: validate, persist to NVS, apply.
+ *
+ * Idempotency: if pc->config_id matches the new config_id, we just
+ * re-send the "applied" ack and return — covers QoS 1 redelivery and
+ * retained-message delivery on broker reconnect.
+ *
+ * Validation failures publish a "rejected" ack with a reason and
+ * flash LED 2 white-steady for 10 s before returning to green.
+ */
 static void handle_config_message(const char *json)
 {
     ESP_LOGI(TAG, "Config received: %s", json);
@@ -511,6 +792,13 @@ static void handle_config_message(const char *json)
 
 /* ---- Phase 2: Registration ---- */
 
+/*
+ * Phase 2 retry loop. Up to MAX_RETRIES attempts with exponential
+ * backoff (1, 2, 4, 8, 16, 32, 60, 60, 60, 60 s). Each attempt creates a
+ * fresh MQTT client, runs CONNECT → SUBSCRIBE(reg/response) →
+ * PUBLISH(reg/request) → wait for response → parse status. On success
+ * the client is kept alive (s_client) for the lifetime of Phase 3+4.
+ */
 esp_err_t mqtt_manager_register(mqtt_reg_result_t *result)
 {
     s_mqtt_events = xEventGroupCreate();
@@ -654,6 +942,14 @@ esp_err_t mqtt_manager_register(mqtt_reg_result_t *result)
 
 /* ---- Phase 3+4: Config + Watering ---- */
 
+/*
+ * Phase 3+4 entry point. Initialises pump GPIOs and ADC, restores any
+ * saved port configs from NVS, spawns the two watering tasks, subscribes
+ * to /config/push, starts the 30 s schedule timer, the 60 s humidity
+ * threshold timer, the 5 s humidity log timer, and the 30 s humidity
+ * telemetry timer. Then sits in an infinite loop waiting for /config/push
+ * messages and dispatching them to handle_config_message().
+ */
 esp_err_t mqtt_manager_run(void)
 {
     if (!s_client || !s_mqtt_events) {
@@ -717,6 +1013,11 @@ esp_err_t mqtt_manager_run(void)
     EventBits_t bits;
     wait_bits(EVT_SUBSCRIBED | EVT_DISCONNECTED, 10000, &bits);
 
+    /* Bring up the optional ThingsBoard telemetry connection. Failure
+     * is logged but never propagated — Mosquitto-side functionality
+     * must keep working regardless of TB availability. */
+    thingsboard_mqtt_start();
+
     /* Start periodic timers (non-blocking callbacks) */
     TimerHandle_t sched_timer = xTimerCreate("sched_chk", pdMS_TO_TICKS(SCHEDULE_CHECK_MS),
                                              pdTRUE, NULL, schedule_check_callback);
@@ -724,12 +1025,16 @@ esp_err_t mqtt_manager_run(void)
                                            pdTRUE, NULL, humidity_check_callback);
     TimerHandle_t hum_log_timer = xTimerCreate("hum_log", pdMS_TO_TICKS(HUMIDITY_LOG_MS),
                                                pdTRUE, NULL, humidity_log_callback);
+    TimerHandle_t hum_tele_timer = xTimerCreate("hum_tele", pdMS_TO_TICKS(HUMIDITY_TELEMETRY_MS),
+                                                pdTRUE, NULL, humidity_telemetry_callback);
     xTimerStart(sched_timer, 0);
     xTimerStart(hum_timer, 0);
     xTimerStart(hum_log_timer, 0);
+    xTimerStart(hum_tele_timer, 0);
 
-    ESP_LOGI(TAG, "Phase 3+4 running: schedule every %ds, humidity check every %ds, humidity log every %ds",
-             SCHEDULE_CHECK_MS / 1000, HUMIDITY_CHECK_MS / 1000, HUMIDITY_LOG_MS / 1000);
+    ESP_LOGI(TAG, "Phase 3+4 running: schedule %ds, hum check %ds, hum log %ds, hum telemetry %ds",
+             SCHEDULE_CHECK_MS / 1000, HUMIDITY_CHECK_MS / 1000,
+             HUMIDITY_LOG_MS / 1000, HUMIDITY_TELEMETRY_MS / 1000);
 
     /* Main loop: wait for config messages */
     for (;;) {

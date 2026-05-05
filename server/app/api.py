@@ -1,3 +1,17 @@
+"""
+REST API endpoints under /api.
+
+Five routes following the spec in docs/phase5-user-data-viewing.puml:
+  GET  /api/devices                      → list
+  GET  /api/devices/{id}                 → device detail + recent events
+  POST /api/devices/{id}/config          → push new config (DB + MQTT)
+  GET  /api/devices/{id}/config?port=N   → latest config for one port
+  GET  /api/devices/{id}/watering        → time-windowed watering history
+
+The frontend never talks to MQTT directly; all device interaction
+flows through these endpoints.
+"""
+
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -15,6 +29,7 @@ router = APIRouter(prefix="/api", tags=["api"])
 
 @router.get("/devices")
 async def list_devices(session: AsyncSession = Depends(get_session)):
+    """Return all devices, most recently seen first."""
     result = await session.execute(text(
         "SELECT device_id, status, firmware_version, last_seen_at "
         "FROM devices ORDER BY last_seen_at DESC"
@@ -33,6 +48,8 @@ async def list_devices(session: AsyncSession = Depends(get_session)):
 
 @router.get("/devices/{device_id}")
 async def get_device(device_id: str, session: AsyncSession = Depends(get_session)):
+    """Return device info plus the latest config per port and the 10
+    most recent watering events. Powers the device detail page."""
     device = await session.get(Device, device_id)
     if not device:
         raise HTTPException(404, "Device not found")
@@ -95,6 +112,9 @@ async def push_config_endpoint(
     body: ConfigCreateRequest,
     session: AsyncSession = Depends(get_session),
 ):
+    """Phase 3 step 1: insert the config in the DB, publish it to MQTT
+    with retain=true, mark as pushed. Returns immediately; the device
+    will ack asynchronously, flipping status to applied/rejected."""
     device = await session.get(Device, device_id)
     if not device:
         raise HTTPException(404, "Device not found")
@@ -143,6 +163,8 @@ async def get_config(
     port: int = Query(ge=1, le=2),
     session: AsyncSession = Depends(get_session),
 ):
+    """Latest config for one port (regardless of status — useful for
+    polling whether the most recent push has been applied yet)."""
     result = await session.execute(text(
         "SELECT * FROM device_configs "
         "WHERE device_id = :did AND port = :port "
@@ -173,6 +195,7 @@ async def get_watering_history(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
 ):
+    """Time-windowed watering history, capped at 200 rows per request."""
     query = "SELECT * FROM watering_events WHERE device_id = :did"
     params: dict = {"did": device_id}
 

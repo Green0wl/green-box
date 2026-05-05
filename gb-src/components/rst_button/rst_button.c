@@ -1,3 +1,13 @@
+/*
+ * RST button (SW1 on the PCB) monitor.
+ *
+ * Polls GPIO12 every 100 ms. When the button is held HIGH continuously
+ * for >= 5 s, fires the user-supplied callback. The expected callback
+ * (in app_main) erases NVS and reboots the device, returning it to
+ * provisioning mode. We poll instead of using GPIO interrupts because
+ * the action is deliberate and slow — interrupt setup would be overkill.
+ */
+
 #include "rst_button.h"
 #include "driver/gpio.h"
 #include "esp_log.h"

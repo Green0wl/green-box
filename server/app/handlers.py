@@ -1,3 +1,17 @@
+"""
+MQTT message handlers.
+
+Each handler is invoked by the background MQTT loop in `app.mqtt` when a
+message arrives on a topic the server subscribes to. Handlers are async
+and create their own database sessions because they run outside any FastAPI
+request context.
+
+ThingsBoard is no longer in this server's responsibility — devices publish
+telemetry directly to the ThingsBoard MQTT broker using their per-device
+access tokens (see firmware mqtt_manager). The server still listens to
+`event/humidity` to keep `last_seen_at` up to date.
+"""
+
 import json
 import logging
 from datetime import datetime, time, timezone
@@ -9,11 +23,20 @@ from app.models import Device, DeviceConfig, WateringEvent
 
 log = logging.getLogger(__name__)
 
+# These intervals are reserved for later use; the MVP firmware does not
+# consume them, but the registration response includes them so the protocol
+# is forward-compatible.
 TELEMETRY_INTERVAL_S = 30
 OTA_CHECK_INTERVAL_S = 3600
 
 
 async def handle_registration(client: aiomqtt.Client, device_id: str, payload: bytes):
+    """Phase 2: register-or-update a device and reply on .../reg/response.
+
+    On first contact, inserts a new row in `devices`. On subsequent contacts
+    updates firmware/hardware version and `last_seen_at`. The response
+    informs the device whether it was newly registered or already known.
+    """
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
@@ -65,6 +88,12 @@ async def handle_registration(client: aiomqtt.Client, device_id: str, payload: b
 
 
 async def handle_config_ack(device_id: str, payload: bytes):
+    """Phase 3: persist the device's response to a config push.
+
+    Updates `device_configs.status` to `applied` or `rejected` and stamps
+    `acked_at`. Per MVP scope only `config_id` and `status` are extracted;
+    other fields in the ack payload are reserved for later use.
+    """
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
@@ -84,7 +113,6 @@ async def handle_config_ack(device_id: str, payload: bytes):
         if device:
             device.last_seen_at = now
 
-        # Find config by config_id
         from sqlalchemy import text
         result = await session.execute(
             text("SELECT id FROM device_configs WHERE config_id = :cid"),
@@ -103,6 +131,7 @@ async def handle_config_ack(device_id: str, payload: bytes):
 
 
 def _parse_time(val: str | None) -> time | None:
+    """Parse 'HH:MM' from a watering event into a datetime.time, or None."""
     if not val:
         return None
     try:
@@ -112,7 +141,35 @@ def _parse_time(val: str | None) -> time | None:
         return None
 
 
+async def handle_humidity_event(device_id: str, payload: bytes):
+    """Update device last_seen_at on periodic humidity telemetry.
+
+    These events arrive on `greenbox/+/event/humidity` every ~30s. They are
+    NOT stored in the relational DB (high-rate time-series belongs in the
+    cloud dashboard's TSDB, where the device publishes directly using its
+    own ThingsBoard access token). The handler only marks the device alive.
+    """
+    try:
+        json.loads(payload)  # validate; values not used server-side
+    except json.JSONDecodeError:
+        log.warning("Invalid JSON in humidity event from %s", device_id)
+        return
+
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        device = await session.get(Device, device_id)
+        if device:
+            device.last_seen_at = now
+            await session.commit()
+
+
 async def handle_watering_event(device_id: str, payload: bytes):
+    """Phase 4: persist a watering event and update device last_seen_at.
+
+    Watering events arrive on `greenbox/+/event/watering`. The server stores
+    both the device-supplied timestamp and a server-side `received_at` to
+    handle clock drift.
+    """
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:

@@ -88,11 +88,21 @@ package "Watering Events — Phase 4" <<Rectangle>> #FFF3E0 {
     ! timestamp : ISO 8601
     ! trigger : "schedule" | "humidity"
     ? scheduled_time : HH:MM
-    ? humidity_at_start_pct : float
-    ? humidity_at_stop_pct : float
+    ? humidity_at_start_pct : float | null
+    ? humidity_at_stop_pct : float | null
     ? planned_duration_s : integer
     ? actual_duration_s : integer
-    ? stop_reason : "duration_complete" | "error"
+    ? stop_reason : "duration_complete" | "error" | "sensor_fault"
+  }
+
+  interface "HumidityTelemetry" as HumEvt {
+    **topic**: greenbox/{device_id}/event/humidity
+    **QoS**: 1 | **retain**: false
+    --
+    ! device_id : string
+    ! timestamp : ISO 8601
+    ! humidity_h1_pct : float | null
+    ! humidity_h2_pct : float | null
   }
 }
 
@@ -106,6 +116,18 @@ note bottom of WEvt
   **retain = false** — events are
   time-series data; only the latest
   retained value would be misleading.
+end note
+
+note bottom of HumEvt
+  Periodic telemetry (~30 s) on the
+  Mosquitto path; the server only
+  uses it to refresh last_seen_at.
+  In parallel, the device publishes
+  to the ThingsBoard MQTT broker
+  on the topic v1/devices/me/telemetry
+  using a per-device access token
+  stored in NVS — see Realisierung
+  IoT-Dashboard for details.
 end note
 
 legend right

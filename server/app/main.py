@@ -1,3 +1,13 @@
+"""
+FastAPI application entry point.
+
+Exposes the REST API and HTML views, and runs the MQTT subscriber loop
+as a background asyncio task that lives for the entire app lifetime
+(via FastAPI's lifespan context manager). The MQTT loop is the bridge
+between devices and the database; without it, registrations, config
+acks and watering events would not be persisted.
+"""
+
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -13,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Start the MQTT loop on app startup, cancel cleanly on shutdown."""
     task = asyncio.create_task(mqtt_loop())
     yield
     task.cancel()

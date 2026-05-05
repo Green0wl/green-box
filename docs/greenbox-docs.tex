@@ -1,22 +1,70 @@
 \documentclass[a4paper,12pt]{article}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+\usepackage[ngerman]{babel}
 \usepackage[margin=25mm, footskip=15mm]{geometry}
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{caption}
 \usepackage{floatpag}
+\usepackage{placeins}
 \usepackage{pdflscape}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{embedfile}
 \usepackage{hyperref}
+
+% Code listings — language-aware syntax styling, line numbers, breakable
+\definecolor{codebg}{RGB}{248,248,242}
+\definecolor{codecomment}{RGB}{106,135,89}
+\definecolor{codekw}{RGB}{0,86,179}
+\definecolor{codestr}{RGB}{139,71,38}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  commentstyle=\color{codecomment}\itshape,
+  keywordstyle=\color{codekw}\bfseries,
+  stringstyle=\color{codestr},
+  showstringspaces=false,
+  breaklines=true,
+  breakatwhitespace=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=8pt,
+  frame=single,
+  framesep=4pt,
+  rulecolor=\color{black!20},
+  xleftmargin=14pt,
+  captionpos=b,
+}
+
+% Robust image inclusion: substitute placeholder if a screenshot is missing.
+\newcommand{\screenshot}[3]{%
+  \IfFileExists{#1}{%
+    \begin{figure}[ht]
+      \centering
+      \includegraphics[width=#3\linewidth, keepaspectratio]{#1}
+      \caption{#2}
+    \end{figure}%
+  }{%
+    \begin{figure}[ht]
+      \centering
+      \fbox{\parbox[c][3cm][c]{0.6\linewidth}{\centering\itshape Screenshot ausstehend:\\\texttt{#1}}}
+      \caption{#2 (Bild folgt nach Abgabe)}
+    \end{figure}%
+  }%
+}
 
 \title{%
   \includegraphics[width=0.35\textwidth]{docs_bin/nobg-light-logo.png}\\[1em]
-  \textbf{GreenBox} \\ System Documentation}
+  \textbf{GreenBox} \\ Cyber-Physisches System für die Pflanzenbewässerung \\[0.5em]
+  \large Projektdokumentation}
 \author{
   Kolomiiets Ivan
   \and Plaster Desir\'{e}e Maria
   \and Fokuhl Robin-Niklas
-  \and Kuca Rino
+  \and Kuca Rino \\[0.5em]
+  \textit{Klasse ITM24-2}
 }
 \date{\today}
 
@@ -31,581 +79,1317 @@
 \thispagestyle{plain}
   \centering
   \includegraphics[width=\linewidth, height=0.96\textheight, keepaspectratio]{../schematic/green-box-schematic.pdf}
-  \captionof{figure}{GreenBox PCB schematic (Rev~1/1, 2026-03-24).}
+  \captionof{figure}{GreenBox-Platinen-Schaltplan (Rev~1/1, 2026-03-24).}
   \label{fig:schematic}
 \end{landscape}
 \restoregeometry
 
 %% ---------------------------------------------------------------
-\section{Global Sequence Overview}
+\section{Einleitung \& Idee}
 
-This diagram shows the high-level lifecycle of a GreenBox device: power-on,
-WiFi and MQTT broker configuration (Phase~1), device registration (Phase~2),
-configuration protocol (Phase~3), watering event reporting (Phase~4), and user
-data viewing (Phase~5). Each phase is documented in detail in a separate
-diagram. See Figure~\ref{fig:global-sequence}.
+\subsection{Projektziel}
 
-%% ---------------------------------------------------------------
-\section{System Architecture}
+Die GreenBox ist ein autonomes, vernetztes Bewässerungssystem für
+Zimmerpflanzen mit zwei unabhängig konfigurierbaren Bewässerungskanälen.
+Jeder Kanal kombiniert eine Pumpe mit einem kapazitiven
+Bodenfeuchtigkeitssensor und kann auf zwei Arten ausgelöst werden:
+nach einem festen Zeitplan oder bei Unterschreiten eines
+Feuchtigkeitsschwellwerts. Konfiguration, Statusanzeige und
+historische Daten erfolgen über die GreenBox-Weboberfläche
+(Device-Viewer und Device-Manager) sowie ein Cloud-Dashboard
+(ThingsBoard).
 
-The GreenBox system follows a decoupled, broker-mediated architecture
-(see Figure~\ref{fig:component}). The ESP32 device communicates exclusively
-through an MQTT broker rather than directly with the application server. This
-design was chosen for several reasons:
+\subsection{Praxisproblem}
 
-\begin{itemize}
-  \item \textbf{Low overhead} --- MQTT's minimal packet format is well-suited
-        for the ESP32's constrained memory and processing power. An HTTP-based
-        approach would require maintaining a full TCP connection per request
-        with significantly larger headers.
-  \item \textbf{Persistent connection} --- a single MQTT session handles
-        registration, configuration, and event reporting. The keep-alive
-        mechanism (60\,s) detects disconnections faster than periodic HTTP
-        polling.
-  \item \textbf{Broker decoupling} --- the device and server are independent
-        subscribers. The server can be restarted, scaled, or replaced without
-        affecting connected devices. The broker queues messages during server
-        downtime (with QoS~1 and persistent sessions).
-  \item \textbf{Retained messages} --- MQTT's retain flag enables offline
-        configuration delivery. When a device reconnects, it immediately
-        receives the latest config without the server needing to know the
-        device came online.
-\end{itemize}
+Die manuelle Pflanzenbewässerung scheitert in der Praxis aus mehreren
+Gründen. Bei Abwesenheit (Urlaub, Geschäftsreise) trocknen Pflanzen
+ohne automatisierte Hilfe schnell aus. Selbst wenn Bewässerung
+durchgeführt wird, dosieren Menschen meistens entweder zu viel
+(Wurzelfäule) oder zu wenig (Vertrocknen). Manuell geführte
+Aufzeichnungen über das Bewässerungsverhalten existieren so gut wie
+nie, sodass eine systematische Optimierung des Wasserbedarfs unmöglich
+ist.
 
-PostgreSQL was selected as the data store for the following reasons:
-\begin{itemize}
-  \item \textbf{Performance} --- advanced query planner, JSONB indexing, and
-        BIGSERIAL primary keys handle unbounded time-series growth efficiently.
-  \item \textbf{Open source} --- no licensing costs, large community, and
-        transparent development.
-  \item \textbf{High reliability and availability} --- ACID compliance,
-        write-ahead logging, and mature replication support ensure data
-        integrity even under unexpected failures.
-  \item \textbf{Fully-featured DB and DBMS} --- native JSONB type allows
-        storing the watering schedule (a variable-length array of
-        time/duration pairs) without a separate join table, alongside
-        constraints, triggers, and rich SQL support.
-  \item \textbf{Cloud suitability} --- unlike embedded databases such as
-        SQLite, PostgreSQL operates as a standalone server process, supporting
-        concurrent access from multiple application instances, connection
-        pooling, and managed cloud deployments (e.g.\ AWS RDS, GCP Cloud SQL).
-\end{itemize}
+Die GreenBox löst diese Probleme: sie bewässert verlässlich nach
+Zeitplan oder messbedingt nach Bodenfeuchtigkeit, dosiert genau über
+konfigurierbare Pumplaufzeiten und protokolliert jedes
+Bewässerungsereignis mit Zeitstempel und Sensorwerten in einer
+Datenbank, sodass die Wirksamkeit langfristig analysiert werden kann.
 
-The ESP32 runs a local web server (HTTP, port~80) solely for initial
-provisioning. This server is active only during Phase~1 --- before the device
-has internet connectivity --- and is destroyed once WiFi credentials are
-confirmed.
+\subsection{Globale Sequenz-Übersicht}
+
+Das Diagramm in Abbildung~\ref{fig:global-sequence} zeigt den
+Lebenszyklus eines GreenBox-Geräts auf hoher Ebene: Einschalten,
+WiFi- und MQTT-Broker-Konfiguration (Phase~1), Geräte-Registrierung
+(Phase~2), Konfigurationsprotokoll (Phase~3),
+Bewässerungs-Event-Reporting (Phase~4) und Benutzer-Datenansicht
+(Phase~5). Jede Phase ist in einem eigenen Sequenzdiagramm im Anhang
+detailliert dargestellt.
 
 %% ---------------------------------------------------------------
-\section{Hardware}
+\section{Technische Planung}
 
-The GreenBox PCB (Rev~1/1, KiCad~9.0.8) is built around an
-ESP32-WROOM-32 module. The schematic is in \texttt{schematic/}. Key
-peripherals:
+\subsection{Systemarchitektur}
+
+Das GreenBox-System folgt einer entkoppelten, broker-vermittelten
+Architektur (siehe Abbildung~\ref{fig:component}). Das ESP32-Gerät
+kommuniziert ausschließlich über einen MQTT-Broker, nicht direkt mit
+dem Anwendungsserver. Diese Entwurfsentscheidung wurde aus mehreren
+Gründen getroffen:
 
 \begin{itemize}
-  \item \textbf{Humidity sensors} --- two CSMS~v2.0 capacitive soil moisture
-        sensors (H1, H2), each providing an analog voltage on CH1\_AOUT /
-        CH2\_AOUT (GPIO32, GPIO33). The firmware reads via ADC1 channels~4
-        and~5 with 12-bit resolution and 12\,dB attenuation ($0$--$3.3$\,V
-        range). Mapping: high ADC value = dry soil = low humidity\,\%;
-        linear inverse: $\text{humidity} = 100 \times (1 - \text{raw}/4095)$\,\%.
-  \item \textbf{RGB LEDs} --- two common-cathode LED\_KRGB (D1~=~Network,
-        D2~=~Application), each with three 220\,$\Omega$ current-limiting
-        resistors (R, G, B channels). Connected to six GPIO pins for
-        independent GPIO digital control (on/off per channel, no dimming).
-        Colors are binary R/G/B combinations: red~=~100, green~=~010,
-        yellow~=~110, white~=~111, purple~=~101, blue~=~001, cyan~=~011.
-  \item \textbf{Water pumps} --- two DC motors (150\,mA each), driven via
-        SS8050 NPN transistors (Q1, Q2) with 1\,k$\Omega$ base resistors and
-        10\,k$\Omega$ pulldowns. PUMP1 and PUMP2 on separate GPIO pins.
-        Transistors are necessary because ESP32 GPIOs can only supply up to
-        40\,mA, while each motor draws 150\,mA. Flyback diodes (D3, D4)
-        across the motors protect against voltage spikes when the motors
-        turn off. The 10\,k$\Omega$ pulldowns keep the transistors OFF
-        while GPIOs are floating during boot.
-  \item \textbf{Reset button} --- SW1 (push-button) with R12 (1\,k$\Omega$)
-        in series and R11 (10\,k$\Omega$) pulldown. Connected to RST
-        (GPIO12). Holding the button for 5\,s erases all NVS data and
-        restarts the device, re-entering provisioning mode.
+  \item \textbf{Geringer Overhead} --- Das minimale Paketformat von
+        MQTT eignet sich gut für den begrenzten Speicher und die
+        eingeschränkte Rechenleistung des ESP32. Ein HTTP-basierter
+        Ansatz würde pro Anfrage eine vollständige TCP-Verbindung mit
+        deutlich größeren Headern erfordern.
+  \item \textbf{Entkopplung über den Broker} --- Gerät und Server sind
+        unabhängige Subscriber. Der Server kann neu gestartet, skaliert
+        oder ersetzt werden, ohne die verbundenen Geräte zu
+        beeinträchtigen. Der Broker puffert Nachrichten während
+        Server-Ausfällen (QoS~1 und persistente Sitzungen).
+  \item \textbf{Retained Messages} --- Das \texttt{retain}-Flag von MQTT
+        ermöglicht Offline-Konfigurationsauslieferung. Sobald sich ein
+        Gerät wieder verbindet, erhält es sofort die letzte Konfiguration,
+        ohne dass der Server den Online-Status nachhalten müsste.
 \end{itemize}
 
-\subsection{GPIO Pin Assignments}
+PostgreSQL wurde aus folgenden Gründen als Datenspeicher gewählt:
+
+\begin{itemize}
+  \item \textbf{Leistung} --- fortgeschrittener Query-Planer, JSONB-Indizes
+        und BIGSERIAL-Primärschlüssel handhaben unbegrenztes
+        Zeitreihen-Wachstum effizient.
+  \item \textbf{Open Source} --- keine Lizenzkosten, große Community und
+        transparente Entwicklung.
+  \item \textbf{Hohe Zuverlässigkeit} --- ACID-Eigenschaften, Write-Ahead
+        Logging und ausgereifte Replikation gewährleisten Datenintegrität
+        auch bei unerwarteten Ausfällen.
+  \item \textbf{Vollwertiges DBMS} --- der native JSONB-Typ erlaubt es,
+        den Bewässerungs-Zeitplan (variabel langes Array aus
+        Zeit/Dauer-Paaren) ohne separate Join-Tabelle zu speichern und
+        bietet Constraints, Trigger sowie umfangreiches SQL.
+  \item \textbf{Cloud-Tauglichkeit} --- im Gegensatz zu eingebetteten
+        Datenbanken wie SQLite läuft PostgreSQL als eigenständiger
+        Server-Prozess und unterstützt parallelen Zugriff aus
+        mehreren Anwendungsinstanzen, Verbindungs-Pooling und
+        verwaltete Cloud-Deployments (z.B.\ AWS RDS, GCP Cloud SQL).
+\end{itemize}
+
+Der ESP32 betreibt einen lokalen Webserver (HTTP, Port~80) ausschließlich
+für die Erst-Inbetriebnahme. Dieser Server ist nur während Phase~1
+aktiv --- bevor das Gerät Internet-Konnektivität besitzt --- und wird
+nach Bestätigung der WiFi-Zugangsdaten heruntergefahren.
+
+\subsection{Verwendete Hardware (Stückliste)}
+
+Die GreenBox-Platine (Rev~1/1, KiCad~9.0.8) basiert auf einem
+ESP32-WROOM-32-Modul. Der Schaltplan befindet sich im Verzeichnis
+\texttt{schematic/} und ist als ganzseitige Abbildung am Anfang dieses
+Dokuments enthalten (siehe Abbildung~\ref{fig:schematic}).
+Die wichtigsten Peripheriebausteine:
+
+\begin{itemize}
+  \item \textbf{Bodenfeuchtigkeitssensoren} --- zwei kapazitive Sensoren
+        CSMS~v2.0 (H1, H2, ersetzt mit v1.2). Jeder Sensor liefert eine analoge Spannung an
+        H1\_AOUT / H2\_AOUT (GPIO32, GPIO33). Die Firmware liest über
+        ADC1 Kanäle~4 und~5 mit 12-Bit-Auflösung und 12\,dB
+        Abschwächung ($0$--$3.3$\,V Eingangsbereich). Abbildung:
+        hoher ADC-Wert = trockener Boden = niedrige Feuchte (in \%);
+        lineare Umkehrung
+        $\text{Feuchte} = 100 \times (1 - \text{raw}/4095)$\,\%.
+  \item \textbf{RGB-LEDs} --- zwei gemeinsam-Kathode-LEDs LED\_KRGB
+        (D1 = Netzwerkstatus, D2 = Anwendungsstatus). Jeder R/G/B-Kanal
+        ist über einen 220\,$\Omega$-Vorwiderstand an einen GPIO
+        angeschlossen, insgesamt sechs GPIOs. Die Ansteuerung erfolgt
+        rein digital (an/aus pro Kanal, ohne PWM-Helligkeitsmodulation).
+        Farben sind binäre R/G/B-Kombinationen:
+        rot~=~100, grün~=~010, gelb~=~110, weiß~=~111,
+        violett~=~101, blau~=~001, türkis~=~011.
+  \item \textbf{Wasserpumpen} --- zwei DC-Motoren (je 150\,mA), gesteuert
+        über SS8050-NPN-Transistoren (Q1, Q2) mit 1\,k$\Omega$
+        Basiswiderstand und 10\,k$\Omega$ Pulldown. PUMP1 und PUMP2 an
+        separaten GPIOs. Die Transistoren sind nötig, weil ESP32-GPIOs
+        nur bis zu 40\,mA liefern können, jeder Motor aber 150\,mA zieht.
+        Freilaufdioden (D3, D4) parallel zum Motor schützen die
+        Transistoren vor Spannungsspitzen beim Abschalten. Die
+        10\,k$\Omega$-Pulldowns halten die Transistoren während des
+        Boot-Vorgangs (GPIO floatend) sicher im Aus-Zustand.
+  \item \textbf{Reset-Taster} --- SW1 (Drucktaster) mit R12
+        (1\,k$\Omega$) in Reihe und R11 (10\,k$\Omega$) Pulldown,
+        angeschlossen an RST (GPIO12). Hält der Benutzer den Taster
+        5\,s gedrückt, löscht die Firmware den gesamten NVS und startet
+        das Gerät neu, sodass es wieder in den Provisionierungsmodus
+        geht.
+\end{itemize}
+
+\subsubsection{GPIO-Belegung}
 
 \begin{center}
 \begin{tabular}{llll}
 \hline
-\textbf{Function} & \textbf{GPIO} & \textbf{Direction} & \textbf{Notes} \\
+\textbf{Funktion} & \textbf{GPIO} & \textbf{Richtung} & \textbf{Hinweis} \\
 \hline
-LED1 Red (D1)     & IO17 & Output & 220\,$\Omega$ to LED \\
-LED1 Green (D1)   & IO16 & Output & 220\,$\Omega$ to LED \\
-LED1 Blue (D1)    & IO4  & Output & 220\,$\Omega$ to LED \\
-LED2 Red (D2)     & IO19 & Output & 220\,$\Omega$ to LED \\
-LED2 Green (D2)   & IO18 & Output & 220\,$\Omega$ to LED \\
-LED2 Blue (D2)    & IO5  & Output & 220\,$\Omega$ to LED \\
-Pump 1            & IO2  & Output & SS8050 via 1\,k$\Omega$ \\
-Pump 2            & IO25 & Output & SS8050 via 1\,k$\Omega$ \\
-Humidity H1       & IO32 & ADC    & ADC1\_CH4 \\
-Humidity H2       & IO33 & ADC    & ADC1\_CH5 \\
-RST Button        & IO12 & Input  & Active high, 10\,k$\Omega$ pulldown \\
+LED1 Rot (D1)     & IO17 & Ausgang & 220\,$\Omega$ zur LED \\
+LED1 Grün (D1)    & IO16 & Ausgang & 220\,$\Omega$ zur LED \\
+LED1 Blau (D1)    & IO4  & Ausgang & 220\,$\Omega$ zur LED \\
+LED2 Rot (D2)     & IO19 & Ausgang & 220\,$\Omega$ zur LED \\
+LED2 Grün (D2)    & IO18 & Ausgang & 220\,$\Omega$ zur LED \\
+LED2 Blau (D2)    & IO5  & Ausgang & 220\,$\Omega$ zur LED \\
+Pumpe 1           & IO2  & Ausgang & SS8050 via 1\,k$\Omega$ \\
+Pumpe 2           & IO25 & Ausgang & SS8050 via 1\,k$\Omega$ \\
+Feuchte H1        & IO32 & ADC     & ADC1\_CH4 \\
+Feuchte H2        & IO33 & ADC     & ADC1\_CH5 \\
+RST-Taster        & IO12 & Eingang & High-aktiv, 10\,k$\Omega$ Pulldown \\
 \hline
 \end{tabular}
 \end{center}
 
-%% ---------------------------------------------------------------
-\section{Firmware Architecture}
+\screenshot{screenshots/hw-overview.jpg}{Aufbau der GreenBox:
+ESP32-WROOM-32, zwei Pumpen mit SS8050-Treibern, zwei kapazitive
+Feuchtigkeitssensoren und zwei RGB-LEDs (im Foto leuchten beide grün
+dauerhaft --- LED~1 = WiFi verbunden, LED~2 = MQTT-Session aktiv).}{0.85}
 
-The ESP32 firmware is built with ESP-IDF~v6.0 using the framework's component
-architecture. Each functional area is implemented as a separate component under
-\texttt{gb-src/components/}, with explicit dependency declarations in
-\texttt{CMakeLists.txt}:
+\subsection{Funktionsbeschreibung (EVA-Prinzip)}
+
+Das System lässt sich nach dem EVA-Prinzip
+(\textbf{E}ingabe -- \textbf{V}erarbeitung -- \textbf{A}usgabe)
+strukturieren:
+
+\begin{center}
+\begin{tabular}{p{0.30\textwidth}p{0.32\textwidth}p{0.30\textwidth}}
+\hline
+\textbf{Eingabe} & \textbf{Verarbeitung} & \textbf{Ausgabe} \\
+\hline
+Bodenfeuchtigkeitssensoren H1, H2 (analog, ADC) &
+ESP32-Firmware: Zeitplaner, Schwellwertvergleich, MQTT-Client &
+Wasserpumpen P1, P2 (GPIO digital, über NPN-Treiber) \\
+\hline
+RST-Taster (digital) &
+Anwendungsserver: Validierung, Datenbank-Persistenz, REST-API &
+RGB-LEDs (Statusanzeige in 13 Zuständen) \\
+\hline
+Web-Formular (HTTP) &
+Mosquitto-Broker: Message-Routing &
+MQTT-Events (\texttt{event/watering}, \texttt{event/humidity}) \\
+\hline
+MQTT-Konfigurationsnachrichten (\texttt{config/push}) &
+ThingsBoard: Telemetrie-Visualisierung &
+Device-Viewer/Device-Manager und ThingsBoard-Charts \\
+\hline
+\end{tabular}
+\end{center}
+
+Die Verarbeitung verteilt sich also über drei Komponenten: ESP32
+(Echtzeit-Steuerung), Server (Geschäftslogik und persistente Speicherung)
+und ThingsBoard (Zeitreihen-Visualisierung). Die Trennung erlaubt
+unabhängiges Testen und Skalieren.
+
+\subsection{Programmablaufplan (PAP)}
+
+Abbildung~\ref{fig:pap} zeigt den Programmablauf der Firmware-Hauptschleife
+in \texttt{app\_main}. Der PAP umfasst die Boot-Initialisierung, die
+Verzweigung zwischen automatischem Wiederverbinden und
+Provisionierung, die SNTP-Zeitsynchronisation, die
+MQTT-Registrierung mit Backoff-Logik und die parallel laufenden
+Phase-3/4-Schleifen (Konfigurations-Empfang, Zeitplan-Prüfung,
+Feuchtigkeits-Schwellwert-Prüfung, Telemetrie-Versand).
+
+%% ---------------------------------------------------------------
+\section{Realisierung}
+
+\subsection{Firmware-Architektur}
+
+Die ESP32-Firmware ist mit ESP-IDF~v6.0 nach dessen
+Komponenten-Architektur implementiert. Jeder Funktionsbereich ist
+eine eigene Komponente unter \texttt{gb-src/components/} mit
+expliziten Abhängigkeiten in \texttt{CMakeLists.txt}:
 
 \begin{itemize}
-  \item \textbf{nvs\_manager} --- wraps NVS (Non-Volatile Storage) for storing
-        and retrieving WiFi credentials (SSID, password), MQTT broker
-        settings (host, port), and per-port watering configuration
-        (config\_id, schedule JSON, humidity threshold, humidity duration).
+  \item \textbf{nvs\_manager} --- Wrapper um NVS (Non-Volatile Storage)
+        für das Speichern und Lesen von WiFi-Zugangsdaten (SSID,
+        Passwort), MQTT-Broker-Einstellungen (Host, Port) und der
+        Bewässerungs-Konfiguration pro Port (config\_id,
+        Schedule-JSON, Feuchtigkeitsschwelle, Feuchtigkeits-Dauer).
         Namespace: \texttt{greenbox}.
-  \item \textbf{led\_driver} --- controls the two RGB LEDs (D1, D2) via
-        FreeRTOS timers for blinking patterns. Supports 13~distinct LED states
-        covering all phases (steady, blinking, slow/fast blink
-        in red, green, yellow, white, purple, blue, cyan).
-  \item \textbf{wifi\_manager} --- manages WiFi in APSTA mode. On boot, the AP
-        SSID is set to the device~ID (\texttt{GB-\{MAC\}}) and the password to
-        the first 8~hex characters of the MAC address. Provides a blocking
-        \texttt{try\_connect()} that waits for STA association or failure with
-        a 15\,s timeout. Supports full stop/restart for hibernate.
-  \item \textbf{web\_server} --- HTTP server for Phase~1 provisioning. Serves an
-        embedded HTML form (\texttt{GET /}), a status endpoint
-        (\texttt{GET /status}) for overheat polling, and a connect endpoint
-        (\texttt{POST /connect}) that stores credentials in NVS, attempts WiFi
-        connection, and verifies MQTT broker reachability via TCP probe before
-        signaling success.
-  \item \textbf{temp\_monitor} --- runs a FreeRTOS background task for overheat
-        protection. During hibernate: stops WiFi and the web server entirely
-        (LED~2 = purple). On exit: restarts both. Exposes
-        \texttt{is\_hibernating()} for the web server to gate provisioning
-        requests.
-  \item \textbf{mqtt\_manager} --- implements Phases~2--4. For registration
-        (Phase~2): connects via MQTT~5.0 (managed component
-        \texttt{espressif/mqtt}) with device~ID as username and a hardcoded
-        pre-shared key (\texttt{"greenbox"}) as password. Retries with
-        exponential backoff (1\,s to 60\,s, max 10~attempts). After
-        registration, the MQTT session stays open for Phases~3--4.
-        For configuration (Phase~3): subscribes to \texttt{config/push},
-        validates and stores configs in NVS per port, sends acknowledgment.
-        Re-subscribes automatically on broker reconnect.
-        For watering (Phase~4): runs schedule checks every 30\,s and
-        humidity threshold checks every 60\,s via FreeRTOS timers.
-        Watering runs in a dedicated FreeRTOS task (non-blocking queue)
-        so MQTT keepalive is not disrupted during long pump cycles.
-        Logs humidity sensor readings every 5\,s.
-  \item \textbf{rst\_button} --- monitors GPIO12 by polling every 100\,ms.
-        When the button is held HIGH for $\geq$5\,s, erases all NVS data
-        and calls \texttt{esp\_restart()}, returning the device to
-        provisioning mode on the next boot.
+  \item \textbf{led\_driver} --- steuert die beiden RGB-LEDs (D1, D2)
+        über FreeRTOS-Timer für Blink-Muster. Unterstützt 13~Zustände
+        über alle Phasen (steady, blinking, slow/fast blink in
+        rot, grün, gelb, weiß, violett, blau, türkis).
+  \item \textbf{wifi\_manager} --- verwaltet WiFi im APSTA-Modus.
+        Beim Boot wird die AP-SSID auf die Geräte-ID
+        (\texttt{GB-\{MAC\}}) gesetzt und das Passwort auf die ersten
+        8~Hex-Zeichen der MAC-Adresse abgeleitet. Die blockierende
+        \texttt{try\_connect()}-Funktion wartet maximal 15\,s auf eine
+        STA-Assoziation. Vollständiger Stop/Restart wird vom
+        Hibernate-Modus genutzt.
+  \item \textbf{web\_server} --- HTTP-Server für die Provisionierung
+        in Phase~1. Liefert ein eingebettetes HTML-Formular
+        (\texttt{GET /}), einen Status-Endpoint
+        (\texttt{GET /status}) für die Übertemperatur-Anzeige und
+        einen Verbindungs-Endpoint (\texttt{POST /connect}), der
+        Zugangsdaten in NVS speichert, eine WiFi-Verbindung versucht
+        und die MQTT-Broker-Erreichbarkeit per TCP-Probe testet, bevor
+        der Erfolg gemeldet wird.
+  \item \textbf{temp\_monitor} --- FreeRTOS-Hintergrund-Task für den
+        Übertemperaturschutz, im MVP zeitbasiert simuliert
+        (2~min Betrieb / 1~min Hibernate). Im Hibernate-Modus:
+        schaltet WiFi und Webserver vollständig ab (LED~2 = violett).
+        Nach Ablauf der Hibernate-Dauer: startet beide neu.
+        Stellt \texttt{is\_hibernating()} für den Webserver bereit,
+        damit dieser Provisionierungsanfragen während Hibernate
+        ablehnt.
+  \item \textbf{mqtt\_manager} --- realisiert die Phasen~2--4. Für die
+        Registrierung (Phase~2) verbindet sich die Komponente per
+        MQTT~5.0 (Managed Component \texttt{espressif/mqtt}) mit der
+        Geräte-ID als Benutzername und einem fest verdrahteten
+        Pre-Shared Key (\texttt{\textquotedbl greenbox\textquotedbl})
+        als Passwort. Wiederholungen mit exponentiellem Backoff
+        (1\,s bis 60\,s,
+        max.\ 10~Versuche). Nach erfolgreicher Registrierung bleibt
+        die MQTT-Sitzung für die Phasen~3--4 offen.
+        Für die Konfiguration (Phase~3) abonniert sie
+        \texttt{config/push}, validiert und persistiert empfangene
+        Konfigurationen in NVS pro Port und sendet eine
+        Bestätigungsnachricht. Bei Reconnect zum Broker wird das
+        Abonnement automatisch erneuert.
+        Für die Bewässerung (Phase~4) prüft sie alle 30\,s die
+        Zeitpläne und alle 60\,s die Feuchtigkeitsschwellwerte über
+        FreeRTOS-Timer. Die eigentliche Pumpensteuerung läuft pro
+        Port in einem dedizierten FreeRTOS-Task mit eigener Queue,
+        sodass beide Pumpen parallel arbeiten können und der
+        MQTT-Keep-Alive nicht durch lange Pumpzyklen gestört wird.
+        Feuchtigkeitswerte werden alle 5\,s ins Log geschrieben und
+        alle 30\,s als MQTT-Telemetrie an
+        \texttt{event/humidity} gesendet.
+  \item \textbf{rst\_button} --- überwacht GPIO12 durch Polling alle
+        100\,ms. Wird der Taster $\geq$5\,s gehalten, löscht die
+        Komponente das gesamte NVS und ruft \texttt{esp\_restart()}
+        auf, sodass das Gerät beim nächsten Boot wieder in den
+        Provisionierungsmodus wechselt.
 \end{itemize}
 
-\subsection{Boot Flow}
+\subsection{Boot-Ablauf}
 
-On power-on, \texttt{app\_main} initializes NVS, WiFi (APSTA mode), the LED
-driver, and the RST button monitor. It then reads saved WiFi credentials from
-NVS. If credentials exist and the STA connection succeeds, provisioning is
-skipped entirely. If no credentials are stored or the connection fails, the
-device starts the provisioning AP and HTTP server as described in Phase~1.
+Beim Einschalten initialisiert \texttt{app\_main} in dieser
+Reihenfolge: NVS, WiFi (APSTA-Modus), den LED-Treiber und den
+RST-Tasten-Monitor. Die Reihenfolge ist wichtig, weil der WiFi-Stack
+beim Hochfahren kurz auf einige LED-GPIO-Pins zugreift (IO5 ist ein
+Strapping-Pin, den die WiFi-RF-Initialisierung berührt).
 
-After WiFi is connected (either path), the device synchronizes its clock via
-SNTP from \texttt{pool.ntp.org} (up to 15 attempts, 1\,s timeout each).
-Accurate time is required for schedule-triggered watering and for timestamps
-in MQTT event payloads. The device then proceeds to Phase~2 registration
-and, on success, enters the Phase~3/4 operational loop.
+Anschließend werden gespeicherte WiFi-Zugangsdaten aus dem NVS
+gelesen. Sind welche vorhanden und führt die STA-Verbindung zum
+Erfolg, wird die Provisionierung übersprungen. Andernfalls startet
+das Gerät den Provisionierungs-AP und den HTTP-Server (siehe Phase~1).
 
-\subsection{Local MQTT Broker Setup}
+Nach Aufbau der WiFi-Verbindung (auf beiden Pfaden) synchronisiert
+das Gerät seine Uhr per SNTP gegen \texttt{pool.ntp.org} (max.\
+15~Versuche mit je 1\,s Timeout). Genaue Zeit wird sowohl für
+zeitgesteuerte Bewässerung als auch für UTC-Zeitstempel in
+MQTT-Events benötigt. Anschließend folgt Phase~2 (Registrierung)
+und bei Erfolg der Dauerbetrieb in Phase~3/4.
 
-For development, a Mosquitto~2 broker configuration is provided in
+\subsection{Lokale MQTT-Broker-Konfiguration}
+
+Für die Entwicklung liegt eine Mosquitto~2-Konfiguration unter
 \texttt{broker/}:
-\begin{itemize}
-  \item \texttt{mosquitto.conf} --- plain TCP on port~1883, password
-        authentication, ACL-based topic authorization.
-  \item \texttt{passwd} --- password file (managed via \texttt{mosquitto\_passwd}).
-        Each device authenticates with its device~ID as both username and
-        client~ID, and a pre-shared key as password.
-  \item \texttt{acl} --- uses Mosquitto's \texttt{pattern} directive with
-        \texttt{\%u} (username) substitution to restrict each device to its own
-        topic subtree. A \texttt{greenbox-server} admin user has full access.
-  \item \texttt{docker-compose.yml} --- runs the broker standalone via
-        \texttt{docker compose up} (for firmware-only testing).
-\end{itemize}
-
-\noindent A root-level \texttt{docker-compose.yml} runs the full stack:
-Mosquitto broker, PostgreSQL~17 (initialized from
-\texttt{server/sql/init.sql}), and the Python application server on
-port~8000. Usage: \texttt{docker compose up --build} from the project root.
-
-%% ---------------------------------------------------------------
-\section{Database Schema}
-
-The database uses three tables (see Figure~\ref{fig:er}):
 
 \begin{itemize}
-  \item \textbf{devices} --- one row per registered GreenBox. Populated during
-        Phase~2 registration. The \texttt{status} column is
-        \texttt{'active'} or \texttt{'inactive'}. The \texttt{last\_seen\_at}
-        timestamp is updated on every registration, config ack, and watering
-        event.
-  \item \textbf{device\_configs} --- one row per configuration push, per port.
-        This table is append-only: each new configuration creates a new row
-        rather than overwriting the previous one, preserving a full audit trail
-        of configuration changes. The \texttt{status} column tracks the
-        lifecycle: \texttt{pending} (saved in DB) $\to$ \texttt{pushed}
-        (published to MQTT, \texttt{pushed\_at} recorded) $\to$
-        \texttt{applied} or \texttt{rejected} (device acknowledgment
-        received, \texttt{acked\_at} recorded). Includes
-        \texttt{humidity\_duration\_s} for humidity-triggered watering
-        duration, independent of schedule slot durations.
-  \item \textbf{watering\_events} --- one row per pump start/stop event.
-        Uses BIGSERIAL because event volume grows linearly with time and number
-        of devices. Each row stores both \texttt{device\_timestamp} (from
-        device clock) and \texttt{received\_at} (server clock) to handle
-        clock drift.
+  \item \texttt{mosquitto.conf} --- unverschlüsseltes TCP auf
+        Port~1883, Passwort-Authentifizierung,
+        ACL-basierte Topic-Autorisierung.
+  \item \texttt{passwd} --- Passwortdatei (verwaltet mit
+        \texttt{mosquitto\_passwd}). Jedes Gerät authentifiziert
+        sich mit seiner Geräte-ID als Benutzername und Client-ID
+        sowie einem Pre-Shared Key als Passwort.
+  \item \texttt{acl} --- nutzt die \texttt{pattern}-Direktive von
+        Mosquitto mit \texttt{\%u}-Substitution (Benutzername),
+        sodass jedes Gerät nur seinen eigenen Topic-Teilbaum
+        verwenden darf. Ein Admin-Benutzer
+        (\texttt{greenbox-server}) hat Vollzugriff.
+  \item \texttt{docker-compose.yml} --- startet den Broker
+        standalone via \texttt{docker compose up} (für
+        Firmware-Tests ohne Server).
 \end{itemize}
 
-Configuration is stored per-port rather than as a monolithic device config.
-Each GreenBox has two independent watering ports, and the user may update
-one port's schedule without affecting the other. Using separate rows (rather
-than two sets of columns in the \texttt{devices} table) also makes the schema
-extensible if future hardware revisions add more ports.
+\noindent Eine zweite \texttt{docker-compose.yml} im Projekt-Stamm
+startet den vollständigen Stack: Mosquitto-Broker, PostgreSQL~17
+(initialisiert aus \texttt{server/sql/init.sql}), den Python-Server
+auf Port~8000 und ThingsBoard CE auf Port~9090. Verwendung:
+\texttt{docker compose up --build} im Projekt-Stamm.
 
-The \texttt{watering\_schedule} column uses JSONB to store an array of
-\texttt{\{time, duration\_s\}} objects. For an MVP this avoids the complexity
-of a separate \texttt{schedule\_entries} table and join queries, while JSONB
-operators still allow server-side filtering and validation.
+\subsection{Datenbankschema}
 
-%% ---------------------------------------------------------------
-\section{MQTT Interface Definitions}
+Die Datenbank verwendet drei Tabellen (siehe Abbildung~\ref{fig:er}):
 
-All MQTT messages follow a consistent topic naming convention
-(see Figure~\ref{fig:mqtt-interfaces}):
+\begin{itemize}
+  \item \textbf{devices} --- eine Zeile pro registriertem GreenBox-Gerät,
+        angelegt während der Phase~2-Registrierung. Die Spalte
+        \texttt{status} ist \texttt{'active'} oder \texttt{'inactive'}.
+        Der Zeitstempel \texttt{last\_seen\_at} wird bei jeder
+        Registrierung, jeder Konfigurations-Bestätigung und jedem
+        Bewässerungs-Event aktualisiert.
+  \item \textbf{device\_configs} --- eine Zeile pro Konfigurations-Push
+        und Port. Diese Tabelle wird nur erweitert: jede neue
+        Konfiguration legt eine neue Zeile an statt vorhandene zu
+        überschreiben, sodass ein vollständiger Audit-Trail erhalten
+        bleibt. Die Spalte \texttt{status} verfolgt den Lebenszyklus:
+        \texttt{pending} (in DB gespeichert) $\to$ \texttt{pushed}
+        (über MQTT veröffentlicht, \texttt{pushed\_at} gesetzt)
+        $\to$ \texttt{applied} oder \texttt{rejected}
+        (Geräte-Bestätigung empfangen, \texttt{acked\_at} gesetzt).
+        Enthält \texttt{humidity\_duration\_s} für die Pumpdauer bei
+        Feuchtigkeits-Auslösung, unabhängig von den Schedule-Slot-Dauern.
+  \item \textbf{watering\_events} --- eine Zeile pro Pumpen-Start/Stop.
+        Nutzt BIGSERIAL, da das Eventvolumen linear mit Zeit und
+        Geräteanzahl wächst. Jeder Eintrag speichert sowohl
+        \texttt{device\_timestamp} (von der Geräte-Uhr) als auch
+        \texttt{received\_at} (Server-Uhr), um Drift erkennen zu können.
+\end{itemize}
+
+Konfigurationen werden pro Port statt pro Gerät gespeichert. Jede
+GreenBox hat zwei unabhängige Bewässerungskanäle; Benutzer können
+einen Kanal ändern, ohne den anderen zu beeinflussen. Separate Zeilen
+machen das Schema außerdem erweiterbar, falls zukünftige
+Hardware-Revisionen mehr Kanäle haben.
+
+Die Spalte \texttt{watering\_schedule} ist vom Typ JSONB und enthält
+ein Array aus \texttt{\{time, duration\_s\}}-Objekten. Für ein MVP
+vermeidet das eine separate \texttt{schedule\_entries}-Tabelle samt
+Join-Queries; gleichzeitig erlauben JSONB-Operatoren weiterhin
+serverseitige Filter und Validierung.
+
+\screenshot{screenshots/device-configs-db.png}{Laufzeit-Auszug aus
+der \texttt{device\_configs}-Tabelle: zwei aufeinanderfolgende Pushes
+für Port~2 desselben Geräts, jeweils mit eigener \texttt{config\_id},
+JSONB-\texttt{watering\_schedule}, Feuchtigkeitsschwelle und
+\texttt{status = pushed}; \texttt{created\_at} und \texttt{pushed\_at}
+sind gesetzt.}{0.85}
+
+\subsection{MQTT-Schnittstellen}
+
+Alle MQTT-Nachrichten folgen einer einheitlichen Topic-Namenskonvention
+(siehe Abbildung~\ref{fig:mqtt-interfaces}):
 
 \begin{center}
 \texttt{greenbox/\{device\_id\}/\{domain\}/\{action\}}
 \end{center}
 
-\noindent where \texttt{domain} is one of \texttt{reg}, \texttt{config}, or
-\texttt{event}, and \texttt{action} specifies the direction or type.
+\noindent Dabei ist \texttt{domain} eines von \texttt{reg},
+\texttt{config} oder \texttt{event}, und \texttt{action} bezeichnet
+die Richtung bzw. den Typ.
 
-\textbf{QoS~1 (at-least-once)} is used throughout. Exactly-once (QoS~2) was
-not chosen because it doubles the handshake overhead and the system already
-handles duplicates: registration uses server-side upsert logic, configuration
-uses the \texttt{config\_id} for idempotent application, and watering events
-are idempotent inserts (duplicate timestamps on the same port are discarded).
+\textbf{QoS~1 (mindestens einmal)} wird durchgängig verwendet.
+Exactly-once (QoS~2) wurde nicht gewählt, weil es den Handshake
+verdoppeln würde und das System Duplikate bereits anders behandelt:
+die Registrierung nutzt serverseitiges Upsert, die Konfiguration
+nutzt das \texttt{config\_id}-Feld für idempotente Anwendung und
+Bewässerungs-Events sind idempotente Inserts (doppelte Zeitstempel
+auf demselben Port werden verworfen).
 
-The \texttt{retain} flag is set to \texttt{true} only on
-\texttt{config/push}. This ensures that a device which was offline when the
-user changed its configuration will receive the latest config immediately upon
-reconnecting and re-subscribing. Watering events use \texttt{retain = false}
-because they are time-series data: retaining only the most recent event would
-be misleading, as the full history matters for analysis.
+Das \texttt{retain}-Flag ist nur auf \texttt{config/push} gesetzt.
+Dadurch erhält ein Gerät, das während einer Konfigurationsänderung
+offline war, beim erneuten Verbinden und Abonnieren sofort die
+aktuelle Konfiguration. Bewässerungs-Events nutzen
+\texttt{retain = false}, weil es sich um Zeitreihendaten handelt:
+nur den letzten Wert zu behalten wäre irreführend, der vollständige
+Verlauf zählt für die Analyse.
 
-Every configuration and event message includes a \texttt{port} field (1 or 2)
-to address the correct pump. This explicit port addressing keeps the topic
-structure flat (one topic per message type) rather than embedding the port
-number in the topic path, which would complicate wildcard subscriptions on the
-server side.
+Jede Konfigurations- und Event-Nachricht enthält ein
+\texttt{port}-Feld (1 oder 2), um die richtige Pumpe zu adressieren.
+Diese explizite Port-Adressierung hält die Topic-Struktur flach (ein
+Topic pro Nachrichtentyp) anstatt den Port in den Topic-Pfad
+einzubetten, was Wildcard-Abos auf der Server-Seite verkomplizieren
+würde.
 
-%% ---------------------------------------------------------------
-\section{Phase 1: WiFi + MQTT Broker Configuration}
+\subsection{Phase 1: WiFi- und MQTT-Broker-Konfiguration}
 
-On first boot (or when no saved credentials exist), the device creates a WiFi
-hotspot with SSID equal to the device~ID (\texttt{GB-\{MAC\}}) and a password
-derived from the first 8~hex characters of the MAC address. The AP runs on
-channel~1 with WPA2-PSK authentication and supports up to 4~concurrent
-stations. LED~1 blinks blue to indicate the provisioning AP is active and
-waiting for a user connection.
+Beim ersten Booten (oder wenn keine gespeicherten Zugangsdaten
+vorliegen) erzeugt das Gerät einen WiFi-Hotspot. Die SSID entspricht
+der Geräte-ID (\texttt{GB-\{MAC\}}), das Passwort wird aus den ersten
+8~Hex-Zeichen der MAC-Adresse abgeleitet. Der AP läuft auf Kanal~1
+mit WPA2-PSK und erlaubt bis zu 4~gleichzeitige Stationen. LED~1
+blinkt blau, um zu signalisieren, dass der Provisionierungs-AP aktiv
+ist und auf einen Benutzer wartet.
 
-The user connects to this hotspot, opens the on-device web interface at
-\texttt{192.168.4.1}, and provides WiFi credentials (SSID, password) along
-with the MQTT broker settings (host, port). Form fields are trimmed of
-leading/trailing whitespace before storage. All parameters are persisted in
-NVS.
+Der Benutzer verbindet sich mit diesem Hotspot, öffnet das
+On-Device-Webinterface unter \texttt{192.168.4.1} und gibt seine
+WiFi-Zugangsdaten (SSID, Passwort) sowie die MQTT-Broker-Einstellungen
+(Host, Port) ein. Eingabewerte werden vor dem Speichern von führenden
+und nachfolgenden Leerzeichen befreit. Alle Parameter werden im NVS
+persistiert.
 
-The device attempts to connect to the specified WiFi network with a 15\,s
-timeout. On success, it performs a TCP probe (5\,s timeout) to verify that the
-MQTT broker is reachable at the given host and port before completing
-provisioning. If the broker is unreachable, provisioning reports an error but
-WiFi stays connected so the user can retry with a different broker address.
+Anschließend versucht das Gerät, sich mit dem angegebenen WiFi-Netz
+zu verbinden (Timeout 15\,s). Bei Erfolg führt es einen TCP-Probe
+(5\,s Timeout) auf den MQTT-Broker durch, um dessen Erreichbarkeit
+zu prüfen, bevor die Provisionierung abgeschlossen wird. Ist der
+Broker nicht erreichbar, meldet die Provisionierung einen Fehler,
+das WiFi bleibt aber verbunden, sodass der Benutzer eine andere
+Broker-Adresse eingeben kann.
 
-Overheat protection runs in parallel: if the device enters hibernate, LED~1
-turns off, WiFi and the web server are shut down entirely. When temperature
-normalizes, both are restarted and LED~1 resumes blue blinking.
+Der Übertemperaturschutz läuft parallel als zeitgesteuerte
+Simulation (2~min Betrieb / 1~min Hibernate, statt echter
+Temperaturmessung --- siehe MVP-Entscheidungen): tritt der
+Hibernate-Zustand ein, geht LED~1 aus, WiFi und Webserver werden
+komplett heruntergefahren. Nach Ablauf der Hibernate-Dauer werden
+beide neu gestartet und LED~1 blinkt wieder blau.
 
-On subsequent boots, saved credentials are tried automatically (LED~1 = red
-blinking during the attempt). If the connection succeeds, provisioning is
-skipped. See Figure~\ref{fig:phase1}.
+Bei späteren Bootvorgängen werden gespeicherte Zugangsdaten
+automatisch ausprobiert (LED~1 blinkt während des Versuchs rot).
+Bei Erfolg wird die Provisionierung übersprungen. Siehe
+Abbildung~\ref{fig:phase1}.
 
-%% ---------------------------------------------------------------
-\section{Phase 2: Device Registration via MQTT}
+\screenshot{screenshots/sw-provisioning.png}{Provisionierungs-Web-Interface
+auf \texttt{192.168.4.1} während die GreenBox als WiFi-Hotspot läuft.}{0.7}
 
-After WiFi connectivity is established, the ESP32 registers itself with the
-server through the MQTT broker (MQTT~5.0, plain TCP, port~1883 --- MVP, no
-TLS). The device authenticates with its device~ID as both MQTT client~ID and
-username, and a hardcoded pre-shared key (\texttt{"greenbox"}) as password.
-The MQTT keep-alive is set to 60\,s.
+\subsection{Phase 2: Geräte-Registrierung via MQTT}
 
-The registration payload includes: \texttt{device\_id}, \texttt{mac\_address},
-\texttt{firmware\_version} (hardcoded \texttt{"1.0.0"}),
-\texttt{hardware\_revision} (hardcoded \texttt{"rev3"}), and
-\texttt{uptime\_ms}. The server responds with a status and a config block
-containing \texttt{telemetry\_interval\_s} and \texttt{ota\_check\_interval\_s}
-(reserved for later use, not consumed by the MVP firmware).
+Nach erfolgreicher WiFi-Verbindung registriert sich der ESP32 beim
+Server über den MQTT-Broker (MQTT~5.0, unverschlüsseltes TCP, Port~1883
+--- MVP, kein TLS). Das Gerät authentifiziert sich mit seiner
+Geräte-ID als MQTT Client-ID und Benutzername sowie einem fest
+verdrahteten Pre-Shared Key
+(\texttt{\textquotedbl greenbox\textquotedbl}) als Passwort. Der
+MQTT-Keep-Alive ist auf 60\,s eingestellt.
 
-The registration follows an exponential backoff retry loop (up to 10~attempts:
-1, 2, 4, 8, 16, 32, 60, 60, 60, 60\,s). LED~2 indicates the failure type:
+Die Registrierungs-Nachricht enthält: \texttt{device\_id},
+\texttt{mac\_address}, \texttt{firmware\_version} (fest
+\texttt{\textquotedbl 1.0.0\textquotedbl}), \texttt{hardware\_revision}
+(fest \texttt{\textquotedbl rev3\textquotedbl}) und \texttt{uptime\_ms}. Der Server antwortet mit
+einem Status und einem Konfigurations-Block, der
+\texttt{telemetry\_interval\_s} und \texttt{ota\_check\_interval\_s}
+enthält (für spätere Verwendung reserviert, im MVP nicht ausgewertet).
 
-\begin{itemize}
-  \item \textbf{Red fast blink} (150\,ms) --- connection error (DNS failure,
-        MQTT auth rejected)
-  \item \textbf{Red slow blink} (1\,s) --- TCP connection failed, subscribe
-        or publish failed
-  \item \textbf{White blinking} (500\,ms) --- server response timeout
-        (no reply within 10\,s)
-  \item \textbf{Red steady} --- server responded with ``rejected'' or max
-        retries exhausted
-  \item \textbf{Yellow blinking} (500\,ms) --- registration in progress
-  \item \textbf{Green steady} --- registration successful
-\end{itemize}
-
-\noindent See Figure~\ref{fig:phase2}.
-
-%% ---------------------------------------------------------------
-\section{Phase 3: Configuration Protocol}
-
-Once registered, the device subscribes to its configuration topic and awaits
-instructions from the server (see Figure~\ref{fig:phase3}).
-
-The configuration flow is initiated by the user through the web dashboard, not
-by the device. The user selects a port (1 or 2) and optionally sets:
+Die Registrierung läuft als Wiederhol-Schleife mit exponentiellem
+Backoff (max.\ 10~Versuche: 1, 2, 4, 8, 16, 32, 60, 60, 60, 60\,s).
+LED~2 zeigt den Fehlertyp an:
 
 \begin{itemize}
-  \item \textbf{Watering schedule} --- daily time slots, each with a
-        UTC time (HH:MM) and duration in seconds. Empty = no scheduled
-        watering. The MVP firmware stores at most 8~slots per port; any
-        slots beyond 8 are silently dropped.
-  \item \textbf{Humidity threshold} (\texttt{humidity\_threshold\_pct}, 0--100)
-        --- the soil moisture level below which watering triggers
-        automatically. Set to 0 to disable humidity-triggered watering.
-  \item \textbf{Humidity duration} (\texttt{humidity\_duration\_s}) --- the
-        pump run time in seconds when humidity triggers watering. Independent
-        of schedule slot durations. Set to 0 to disable.
+  \item \textbf{Rot schnell blinkend} (150\,ms) --- Verbindungsfehler
+        (DNS-Auflösung gescheitert, MQTT-Authentifizierung abgelehnt)
+  \item \textbf{Rot langsam blinkend} (1\,s) --- TCP-Verbindung
+        gescheitert, Subscribe oder Publish gescheitert
+  \item \textbf{Weiß blinkend} (500\,ms) --- Server-Antwort-Timeout
+        (keine Antwort binnen 10\,s)
+  \item \textbf{Rot dauerhaft} --- Server antwortete mit
+        ``rejected'' oder maximale Retries ausgeschöpft
+  \item \textbf{Gelb blinkend} (500\,ms) --- Registrierung läuft
+  \item \textbf{Grün dauerhaft} --- Registrierung erfolgreich
 \end{itemize}
 
-\noindent All fields are optional; empty schedule and zero thresholds disable
-the respective trigger. The web frontend sends a POST request to the server,
-which validates the input, stores it in \texttt{device\_configs} with
-\texttt{status = pending}, and publishes it to the MQTT broker with
-\texttt{retain = true}.
+\noindent Siehe Abbildung~\ref{fig:phase2}.
 
-Retained messages are central to this design. If the device is online, it
-receives the config immediately. If it is offline (powered down, WiFi lost),
-the broker stores the retained message and delivers it the moment the device
-reconnects and re-subscribes. This eliminates the need for the server to track
-device online/offline state or implement a push-retry mechanism.
+\subsection{Phase 3: Konfigurationsprotokoll}
 
-Each configuration carries a unique \texttt{config\_id}. The device stores the
-last applied \texttt{config\_id} per port in NVS. When the same
-\texttt{config\_id} arrives again --- due to QoS~1 redelivery or the retained
-message on reconnect --- the device re-sends the acknowledgment but does not
-re-apply the configuration. This provides idempotency without requiring
-exactly-once delivery.
+Nach erfolgreicher Registrierung abonniert das Gerät sein
+Konfigurations-Topic und wartet auf Befehle des Servers (siehe
+Abbildung~\ref{fig:phase3}).
 
-The device validates all fields locally before applying. A rejected
-configuration triggers LED~2 = white steady for 10\,s, then returns to green.
-The acknowledgment includes \texttt{status = "rejected"} and a \texttt{reason}
-string. Defined rejection reasons:
+Der Konfigurationsprozess wird vom Benutzer über den Device-Manager
+gestartet, nicht vom Gerät. Der Benutzer wählt einen Port (1 oder 2)
+und setzt optional:
 
 \begin{itemize}
-  \item \texttt{"missing\_fields"} --- required fields (\texttt{config\_id},
-        \texttt{port}) absent from payload.
-  \item \texttt{"invalid\_values"} --- \texttt{port} not in $\{1, 2\}$ or
-        \texttt{humidity\_threshold\_pct} outside 0--100.
+  \item \textbf{Bewässerungs-Zeitplan} --- tägliche Zeitslots, jeweils
+        mit UTC-Zeit (HH:MM) und Dauer in Sekunden. Leer~=~keine
+        zeitgesteuerte Bewässerung. Die MVP-Firmware speichert
+        maximal 8~Slots pro Port; weitere Slots werden stillschweigend
+        verworfen.
+  \item \textbf{Feuchtigkeitsschwelle}
+        (\texttt{humidity\_threshold\_pct}, 0--100) --- der
+        Bodenfeuchtigkeitswert, unterhalb dessen die
+        Bewässerung automatisch ausgelöst wird. Wert 0 deaktiviert
+        diesen Trigger.
+  \item \textbf{Feuchtigkeits-Dauer}
+        (\texttt{humidity\_duration\_s}) --- die Pumplaufzeit in
+        Sekunden, wenn die Feuchtigkeit den Schwellwert auslöst.
+        Unabhängig von den Schedule-Slot-Dauern. Wert 0 deaktiviert.
 \end{itemize}
 
-\noindent In the MVP, the server extracts only \texttt{config\_id} and
-\texttt{status} from the ack message. Other fields (\texttt{timestamp},
-\texttt{port}, \texttt{reason}) are sent by the device for later use but
-are not stored.
+\noindent Alle Felder sind optional; leerer Zeitplan und Nullen für
+die Schwellwerte deaktivieren den jeweiligen Trigger. Der Device-Manager
+sendet einen POST-Request an den Server, der die Eingaben validiert,
+sie in \texttt{device\_configs} mit \texttt{status = pending} ablegt
+und mit \texttt{retain = true} an den MQTT-Broker publiziert.
 
-Watering schedule times are specified in UTC. The ESP32 synchronizes its
-clock via SNTP (\texttt{pool.ntp.org}) after WiFi connection, not from the
-server's \texttt{server\_time} field.
+Retained Messages sind zentral für diesen Entwurf. Ist das Gerät
+online, erhält es die Konfiguration sofort. Ist es offline (z.B.
+abgeschaltet oder WiFi-Verlust), speichert der Broker die Nachricht
+und liefert sie aus, sobald das Gerät sich erneut verbindet und
+abonniert. Dadurch muss der Server keinen Online-Status der Geräte
+verwalten oder einen Push-Retry-Mechanismus implementieren.
 
-Configuration is stored in NVS keyed by port number (config\_id, schedule
-JSON, humidity threshold, humidity duration), ensuring it survives device
-reboots without requiring a re-push from the server. The status lifecycle
-is tracked with separate timestamps: \texttt{pushed\_at} (when the MQTT
-message was published) and \texttt{acked\_at} (when the device acknowledged).
+Jede Konfiguration trägt eine eindeutige \texttt{config\_id}. Das
+Gerät speichert die zuletzt angewendete \texttt{config\_id} pro Port
+im NVS. Trifft dieselbe \texttt{config\_id} erneut ein --- z.B.
+durch QoS~1-Redelivery oder die Retained Message bei Reconnect ---
+sendet das Gerät die Bestätigung erneut, wendet die Konfiguration
+aber nicht ein zweites Mal an. So wird Idempotenz ohne
+Exactly-once-Delivery erreicht.
 
-%% ---------------------------------------------------------------
-\section{Phase 4: Watering Event Reporting}
+Das Gerät validiert alle Felder lokal vor der Anwendung. Eine
+abgelehnte Konfiguration führt zu LED~2 = weiß dauerhaft für
+10\,s; danach geht die LED zurück auf grün. Die Bestätigungsnachricht
+enthält \texttt{status = "rejected"} und eine \texttt{reason}-Zeichenkette.
+Definierte Ablehnungsgründe:
 
-The GreenBox reports every pump activation and deactivation as a watering
-event (see Figure~\ref{fig:phase4}).
+\begin{itemize}
+  \item \texttt{\textquotedbl missing\_fields\textquotedbl} ---
+        erforderliche Felder (\texttt{config\_id}, \texttt{port})
+        fehlen in der Nachricht.
+  \item \texttt{\textquotedbl invalid\_values\textquotedbl} ---
+        \texttt{port} nicht in $\{1, 2\}$ oder
+        \texttt{humidity\_threshold\_pct} außerhalb 0--100.
+\end{itemize}
 
-Two triggers can start a watering cycle:
+\noindent Im MVP wertet der Server nur \texttt{config\_id} und
+\texttt{status} aus der Ack-Nachricht aus. Die übrigen Felder
+(\texttt{timestamp}, \texttt{port}, \texttt{reason}) werden vom
+Gerät zwar mitgesendet, aber nicht persistiert.
+
+Bewässerungs-Zeitpläne werden in UTC angegeben. Der ESP32
+synchronisiert seine Uhr per SNTP (\texttt{pool.ntp.org}) nach
+WiFi-Verbindung, nicht aus dem \texttt{server\_time}-Feld des Servers.
+
+Die Konfiguration wird im NVS pro Port gespeichert (config\_id,
+Schedule-JSON, Feuchtigkeitsschwelle, Feuchtigkeits-Dauer), sodass
+sie Reboots übersteht und kein erneutes Push vom Server nötig ist.
+Der Status-Lebenszyklus wird durch zwei separate Zeitstempel
+festgehalten: \texttt{pushed\_at} (wann die MQTT-Nachricht
+publiziert wurde) und \texttt{acked\_at} (wann das Gerät bestätigt
+hat).
+
+\subsection{Phase 4: Bewässerungs-Event-Reporting}
+
+Die GreenBox meldet jede Pumpen-Aktivierung und -Deaktivierung als
+Bewässerungs-Event (siehe Abbildung~\ref{fig:phase4}).
+
+Zwei Auslöser können einen Bewässerungs-Zyklus starten:
 
 \begin{enumerate}
-  \item \textbf{Schedule trigger} --- a FreeRTOS timer checks every 30\,s
-        whether the current UTC hour:minute matches any configured slot.
-        A same-minute deduplication guard prevents re-triggering within the
-        same minute. When matched, the device reads the humidity sensor for
-        that port, activates the pump GPIO (HIGH), and runs for the slot's
-        configured \texttt{duration\_s}.
-  \item \textbf{Humidity trigger} --- a separate timer checks every 60\,s
-        whether the humidity reading is below
-        \texttt{humidity\_threshold\_pct}. If so, the pump runs for
-        \texttt{humidity\_duration\_s} (independent of schedule durations).
-        Both \texttt{humidity\_threshold\_pct} and
-        \texttt{humidity\_duration\_s} must be $>0$ for this trigger to be
-        active.
+  \item \textbf{Zeit-Trigger} --- ein FreeRTOS-Timer prüft alle 30\,s,
+        ob die aktuelle UTC-Stunde:Minute zu einem konfigurierten Slot
+        passt. Ein Dedup-Schutz pro Minute verhindert mehrfaches
+        Auslösen innerhalb derselben Minute. Bei Treffer liest das
+        Gerät den entsprechenden Feuchtigkeitssensor, aktiviert den
+        Pumpen-GPIO (HIGH) und lässt die Pumpe für die im Slot
+        angegebene \texttt{duration\_s} laufen.
+  \item \textbf{Feuchtigkeits-Trigger} --- ein separater Timer prüft
+        alle 60\,s, ob der Feuchtigkeitswert unter
+        \texttt{humidity\_threshold\_pct} liegt. Falls ja, läuft die
+        Pumpe für \texttt{humidity\_duration\_s} (unabhängig von den
+        Schedule-Dauern). Beide Werte müssen $>0$ sein, damit dieser
+        Trigger aktiv ist.
 \end{enumerate}
 
-\noindent Watering runs in a dedicated FreeRTOS task that reads from a queue.
-Timer callbacks post commands to the queue without blocking, so the MQTT
-keep-alive (60\,s) is never disrupted during long pump cycles. LED~2 =
-cyan blinking while a pump is active, green steady when idle.
+\noindent Die eigentliche Pumpensteuerung läuft pro Port in einem
+dedizierten FreeRTOS-Task, der aus einer Queue liest. Timer-Callbacks
+schicken nur Befehle in die Queue (nicht-blockierend), sodass der
+MQTT-Keep-Alive (60\,s) während langer Pumpzyklen nicht gestört wird.
+LED~2 ist türkis blinkend, solange mindestens eine Pumpe läuft, und
+grün dauerhaft im Leerlauf. Da beide Ports eigene Tasks haben,
+können sie parallel bewässern.
 
-In addition to threshold checks, the device logs humidity readings from both
-sensors every 5\,s at INFO level for diagnostic purposes.
+Zusätzlich zu den Schwellwert-Prüfungen schreibt das Gerät die
+Feuchtigkeitswerte beider Sensoren alle 5\,s ins INFO-Log und
+veröffentlicht alle 30\,s eine Telemetrie-Nachricht. Diese
+Telemetrie geht parallel an zwei Empfänger: an den Mosquitto-Broker
+auf \texttt{greenbox/\{device\_id\}/event/humidity} (zur
+Aktualisierung von \texttt{last\_seen\_at} im Server) und direkt an
+den ThingsBoard-Broker auf \texttt{v1/devices/me/telemetry}
+(Cloud-Visualisierung als kontinuierliche Zeitreihe, auch außerhalb
+von Bewässerungszyklen).
 
-Each event payload includes a \texttt{trigger} field (\texttt{"schedule"} or
-\texttt{"humidity"}) and real UTC timestamps from the SNTP-synchronized
-clock. Start events include \texttt{humidity\_at\_start\_pct} and
-\texttt{planned\_duration\_s}; stop events include
-\texttt{humidity\_at\_stop\_pct}, \texttt{actual\_duration\_s}, and
-\texttt{stop\_reason}. The \texttt{stop\_reason} field enables post-hoc
-analysis: \texttt{duration\_complete} indicates a normal cycle, and
-\texttt{error} indicates a pump fault or sensor failure.
+Jede Event-Nachricht enthält ein \texttt{trigger}-Feld
+(\texttt{\textquotedbl schedule\textquotedbl} oder
+\texttt{\textquotedbl humidity\textquotedbl}) und reale
+UTC-Zeitstempel aus der SNTP-synchronisierten Uhr.
+Start-Events enthalten \texttt{humidity\_at\_start\_pct} und
+\texttt{planned\_duration\_s}; Stop-Events enthalten
+\texttt{humidity\_at\_stop\_pct}, \texttt{actual\_duration\_s}
+und \texttt{stop\_reason}. Das Feld \texttt{stop\_reason}
+ermöglicht nachträgliche Analyse: \texttt{duration\_complete}
+steht für einen regulären Zyklus, \texttt{error} für eine
+Pumpen- oder Sensor-Störung.
 
-Events are published immediately upon pump start and stop --- they are not
-batched or deferred. A user watching the dashboard should see the pump status
-change within seconds.
+Events werden sofort beim Pumpen-Start und -Stop publiziert ---
+nicht gepuffert oder verzögert. Ein Benutzer, der das Dashboard
+beobachtet, sieht den Pumpenstatus binnen Sekunden ändern.
 
-The server subscribes to \texttt{greenbox/+/event/watering} (max QoS~1) using
-a wildcard, which scales to any number of devices without per-device
-subscription management. Each event is stored with both a
-\texttt{device\_timestamp} (from the device's clock) and a
-\texttt{received\_at} (server wall clock) to handle clock drift. The server
-also updates the device's \texttt{last\_seen\_at} on every event received.
+Der Server abonniert \texttt{greenbox/+/event/watering} (max.
+QoS~1) per Wildcard, sodass die Lösung mit beliebig vielen Geräten
+ohne pro-Gerät-Abonnement-Verwaltung skaliert. Jedes Event wird mit
+sowohl \texttt{device\_timestamp} (Geräte-Uhr) als auch
+\texttt{received\_at} (Server-Uhr) gespeichert, um Clock-Drift
+zu erkennen. Der Server aktualisiert außerdem das
+\texttt{last\_seen\_at}-Feld bei jedem empfangenen Event.
 
-%% ---------------------------------------------------------------
-\section{Phase 5: User Data Viewing}
+\subsection{Phase 5: Benutzer-Datenansicht}
 
-The web frontend provides a dashboard for monitoring device status,
-watering history, and configuration (see Figure~\ref{fig:phase5}).
+Die GreenBox-Weboberfläche besteht aus zwei Seiten: dem
+\emph{Device-Viewer} (Geräteliste auf \texttt{/}) und dem
+\emph{Device-Manager} (Detailseite auf \texttt{/devices/\{id\}}).
+Zusammen bieten sie eine Übersicht über Gerätestatus,
+Bewässerungshistorie und Konfiguration (siehe
+Abbildung~\ref{fig:phase5}).
 
-The application server (Python / FastAPI) runs an MQTT background task that
-subscribes to three wildcard topics (max QoS~1, matching the QoS devices
-publish with):
+Der Anwendungsserver (Python / FastAPI) startet einen
+MQTT-Hintergrund-Task, der vier Wildcard-Topics abonniert (max.\
+QoS~1, passend zur Publish-QoS der Geräte):
 
 \begin{itemize}
-  \item \texttt{greenbox/+/reg/request} --- device registrations
-  \item \texttt{greenbox/+/config/ack} --- configuration acknowledgments
-  \item \texttt{greenbox/+/event/watering} --- watering events
+  \item \texttt{greenbox/+/reg/request} --- Geräte-Registrierungen
+  \item \texttt{greenbox/+/config/ack} --- Konfigurations-Bestätigungen
+  \item \texttt{greenbox/+/event/watering} --- Bewässerungs-Events
+  \item \texttt{greenbox/+/event/humidity} --- Feuchtigkeits-Telemetrie
 \end{itemize}
 
-\noindent The MQTT client reconnects automatically with a 5\,s delay if the
-broker restarts.
+\noindent Der MQTT-Client verbindet sich nach Verbindungsabbruch
+automatisch mit 5\,s Verzögerung neu.
 
-The REST API is the sole interface between the web frontend and the server.
-The frontend never communicates with the MQTT broker directly.
+Die REST-API ist die einzige Schnittstelle zwischen Device-Viewer
+bzw.\ Device-Manager und Server. Das Frontend kommuniziert nie direkt
+mit dem MQTT-Broker.
 
-\subsection{REST API Endpoints}
+\subsubsection{REST-API-Endpunkte}
 
 \begin{center}
 \begin{tabular}{lll}
 \hline
-\textbf{Method} & \textbf{Path} & \textbf{Description} \\
+\textbf{Methode} & \textbf{Pfad} & \textbf{Beschreibung} \\
 \hline
-GET  & \texttt{/api/devices}                       & List all devices \\
-GET  & \texttt{/api/devices/\{id\}}                & Device detail + configs + events \\
-POST & \texttt{/api/devices/\{id\}/config}          & Push config to device \\
-GET  & \texttt{/api/devices/\{id\}/config?port=N}   & Latest config for port \\
-GET  & \texttt{/api/devices/\{id\}/watering}         & Watering history \\
+GET  & \texttt{/api/devices}                       & alle Geräte auflisten \\
+GET  & \texttt{/api/devices/\{id\}}                & Gerätedetail + Konfigs + Events \\
+POST & \texttt{/api/devices/\{id\}/config}          & Konfiguration an Gerät pushen \\
+GET  & \texttt{/api/devices/\{id\}/config?port=N}   & aktuelle Konfig für Port \\
+GET  & \texttt{/api/devices/\{id\}/watering}         & Bewässerungshistorie \\
 \hline
 \end{tabular}
 \end{center}
 
-\noindent The watering history endpoint accepts query parameters:
-\texttt{port} (1 or 2), \texttt{from} and \texttt{to} (ISO~8601 timestamps),
-and \texttt{limit} (1--200, default 50).
+\noindent Die Watering-History akzeptiert Query-Parameter:
+\texttt{port} (1 oder 2), \texttt{from} und \texttt{to} (ISO~8601),
+\texttt{limit} (1--200, Default 50).
 
-The device detail endpoint returns the latest configuration per port
-(using PostgreSQL \texttt{DISTINCT ON (port) ... ORDER BY created\_at DESC}),
-regardless of config status. The device detail page auto-refreshes every
-10\,s.
+Der Gerätedetail-Endpunkt gibt die aktuelle Konfiguration je Port
+zurück (per PostgreSQL
+\texttt{DISTINCT ON (port) ... ORDER BY created\_at DESC}),
+unabhängig vom Konfig-Status. Die Detailseite aktualisiert sich
+alle 10\,s automatisch.
 
-The configuration update endpoint
-(\texttt{POST /api/devices/\{device\_id\}/config}) returns immediately with
-\texttt{status = pushed}, not \texttt{applied}. The actual application
-happens asynchronously through the Phase~3 MQTT flow.
+Der Konfigurations-Update-Endpunkt
+(\texttt{POST /api/devices/\{device\_id\}/config}) liefert sofort
+\texttt{status = pushed} zurück --- nicht \texttt{applied}. Die
+eigentliche Anwendung erfolgt asynchron im Phase~3-MQTT-Fluss.
 
-\subsection{Web UI}
+\subsubsection{Device-Viewer und Device-Manager}
 
-The server renders two HTML pages via Jinja2 templates:
-
-\begin{itemize}
-  \item \texttt{GET /} --- device list (device~ID, status, firmware, last
-        seen).
-  \item \texttt{GET /devices/\{id\}} --- device detail with info card,
-        per-port config panels (current config display + push form), and
-        recent watering events table. The config push form accepts schedule
-        lines (HH:MM duration\_s), humidity threshold (\%), and humidity
-        duration (s); all fields are optional.
-\end{itemize}
-
-%% ---------------------------------------------------------------
-\section{LED State Diagram}
-
-The GreenBox uses two RGB LEDs for visual status indication
-(see Figure~\ref{fig:led-states}):
+Der Server rendert zwei HTML-Seiten über Jinja2-Templates:
 
 \begin{itemize}
-  \item \textbf{LED~1 (Network Status)} --- indicates WiFi connectivity state.
-        Blue blinking = provisioning AP active; red blinking = connecting;
-        green steady = connected; red steady = credentials rejected.
-  \item \textbf{LED~2 (Application Status)} --- indicates registration
-        progress, configuration activity, watering status, overheat
-        protection, and general operational state.
+  \item \texttt{GET /} --- \textbf{Device-Viewer}: Geräteliste
+        (Geräte-ID, Status, Firmware, Hardware-Revision, zuletzt
+        gesehen).
+  \item \texttt{GET /devices/\{id\}} --- \textbf{Device-Manager}:
+        Gerätedetail mit Info-Karte, Konfig-Panels pro Port
+        (aktuelle Konfiguration und Push-Formular) sowie einer
+        Tabelle der jüngsten Bewässerungs-Events. Das Push-Formular
+        akzeptiert Schedule-Zeilen (HH:MM duration\_s),
+        Feuchtigkeitsschwelle (\%) und Feuchtigkeits-Dauer (s); alle
+        Felder sind optional.
 \end{itemize}
 
-\noindent Blink periods:
+\screenshot{screenshots/sw-device-viewer.png}{Device-Viewer
+(\texttt{/}) mit allen registrierten GreenBox-Geräten.}{0.85}
+
+\screenshot{screenshots/sw-device-manager.png}{Device-Manager
+(\texttt{/devices/\{id\}}) mit Konfig-Panels für beide Ports und
+Bewässerungs-Historie.}{0.85}
+
+\subsection{LED-Zustandsdiagramm}
+
+Die GreenBox nutzt zwei RGB-LEDs für die visuelle Statusanzeige
+(siehe Abbildung~\ref{fig:led-states}):
+
+\begin{itemize}
+  \item \textbf{LED~1 (Netzwerkstatus)} --- zeigt den WiFi-Status.
+        Blau blinkend = Provisionierungs-AP aktiv; rot blinkend =
+        verbindet; grün dauerhaft = verbunden; rot dauerhaft =
+        Zugangsdaten abgelehnt.
+  \item \textbf{LED~2 (Anwendungsstatus)} --- zeigt
+        Registrierungsfortschritt, Konfigurations-Aktivität,
+        Bewässerungsstatus, Übertemperaturschutz und allgemeinen
+        Betriebszustand.
+\end{itemize}
+
+\noindent Blink-Perioden:
 
 \begin{center}
 \begin{tabular}{ll}
 \hline
-\textbf{State} & \textbf{Period} \\
+\textbf{Zustand} & \textbf{Periode} \\
 \hline
-Red blinking (normal)   & 500\,ms \\
-Red slow blink          & 1000\,ms \\
-Red fast blink          & 150\,ms \\
-Yellow blinking         & 500\,ms \\
-White blinking          & 500\,ms \\
-Blue blinking           & 500\,ms \\
-Cyan blinking           & 500\,ms \\
+Rot blinkend (normal)   & 500\,ms \\
+Rot langsam blinkend    & 1000\,ms \\
+Rot schnell blinkend    & 150\,ms \\
+Gelb blinkend           & 500\,ms \\
+Weiß blinkend           & 500\,ms \\
+Blau blinkend           & 500\,ms \\
+Türkis blinkend         & 500\,ms \\
 \hline
 \end{tabular}
 \end{center}
 
+\subsection{IoT-Dashboard (ThingsBoard)}
+
+Als Bonus-Punkt wurde zusätzlich ein
+Cloud-Dashboard integriert: ThingsBoard Community Edition läuft als
+Docker-Container neben Mosquitto, PostgreSQL und dem
+Anwendungsserver. Die Visualisierung erfolgt im Web-UI von
+ThingsBoard auf Port~9090.
+
+\paragraph{Architektur.} Jedes GreenBox-Gerät unterhält zwei
+unabhängige MQTT-Verbindungen parallel: die erste zum
+Mosquitto-Broker (für Registrierung, Konfiguration,
+Bewässerungs-Events --- die Anwendungslogik) und die zweite direkt
+zum ThingsBoard-MQTT-Broker (ausschließlich für die periodische
+Feuchtigkeits-Telemetrie). Der Anwendungsserver ist nicht im
+Telemetrie-Pfad zu ThingsBoard --- die Geräte publizieren direkt.
+Auf dem ThingsBoard-Pfad wird die Standard-Telemetrie-Topic
+\texttt{v1/devices/me/telemetry} mit einem flachen JSON-Objekt
+\texttt{\{"humidity\_h1": 38.2, "humidity\_h2": 41.7\}} verwendet.
+
+\paragraph{Pro-Gerät-Tokens.} Jedes Gerät erhält seinen eigenen
+ThingsBoard-Access-Token, der über das
+Provisionierungs-Web-Formular eingegeben und im NVS gespeichert
+wird. Beim Verbindungsaufbau zum ThingsBoard-Broker wird der Token
+als MQTT-Username (Passwort leer) übergeben. Bleibt das Token-Feld
+beim Provisioning leer, startet das Gerät schlicht keinen zweiten
+MQTT-Client, und die Cloud-Telemetrie ist für dieses Gerät
+deaktiviert --- die übrige Pipeline (Mosquitto + PostgreSQL +
+Device-Viewer/Device-Manager) läuft davon unabhängig weiter.
+
+\paragraph{Port-Mapping.} ThingsBoard und Mosquitto belegen beide
+intern den MQTT-Standardport~1883. Damit es zu keinem Konflikt
+kommt, wird der ThingsBoard-MQTT-Port im Compose-File auf den
+Host-Port~1884 gemappt (\texttt{1884:1883}); die Geräte verbinden
+sich also via \texttt{mqtt://<host>:1884}. Es wird angenommen, dass
+ThingsBoard auf demselben Host wie Mosquitto erreichbar ist (das
+Gerät verwendet die gleiche Host-Adresse, die im Provisionierungs-
+Formular für Mosquitto gesetzt wurde).
+
+\paragraph{Erst-Inbetriebnahme.} Beim ersten Start ist ThingsBoard
+mit Standard-Zugangsdaten konfiguriert. Anmelden auf
+\texttt{http://localhost:9090} mit:
+
+\begin{center}
+\begin{tabular}{lll}
+\hline
+\textbf{Rolle} & \textbf{Benutzer} & \textbf{Passwort} \\
+\hline
+System-Administrator & \texttt{sysadmin@thingsboard.org}  & \texttt{sysadmin} \\
+Tenant-Administrator & \texttt{tenant@thingsboard.org}    & \texttt{tenant}   \\
+Endbenutzer          & \texttt{customer@thingsboard.org}  & \texttt{customer} \\
+\hline
+\end{tabular}
+\end{center}
+
+\noindent Für die normale Nutzung wird der Tenant-Account verwendet:
+unter \emph{Devices} pro physischem GreenBox-Gerät ein neues
+ThingsBoard-Gerät anlegen, den Access-Token kopieren und beim
+nächsten Provisioning-Vorgang in das Feld
+"`ThingsBoard Access Token"' im Web-Formular der GreenBox einfügen.
+Das Gerät speichert den Token in seinem NVS und beginnt nach dem
+Verbindungsaufbau, die Feuchtigkeits-Telemetrie direkt an
+ThingsBoard zu senden. Anschließend lassen sich im Tenant-UI
+Dashboards mit Widgets für Feuchtigkeits-Zeitreihen und aktuellen
+Pumpen-Status zusammenstellen.
+
+\screenshot{screenshots/sw-thingsboard.png}{ThingsBoard-Dashboard mit
+Feuchtigkeits-Zeitreihen für H1 und H2.}{0.9}
+
+\FloatBarrier
+
+\subsection{Quellcode-Auszüge mit Erklärung}
+
+Dieser Abschnitt zeigt einige zentrale Stellen aus dem Code, die für
+das Verständnis der Architektur entscheidend sind. Der vollständige
+Quellcode ist als ZIP-Anhang am Ende dieses Dokuments beigelegt.
+
+\subsubsection{Boot-Orchestrierung in \texttt{app\_main}}
+
+\begin{lstlisting}[language=C, caption={Auszug aus
+\texttt{gb-src/main/gb-src.c} --- Phasen-Orchestrierung.}]
+void app_main(void)
+{
+    ESP_ERROR_CHECK(nvs_manager_init());
+    ESP_ERROR_CHECK(wifi_manager_init());
+    ESP_ERROR_CHECK(led_driver_init());
+    ESP_ERROR_CHECK(rst_button_start(on_rst_button));
+
+    if (!try_saved_credentials()) {
+        /* No saved creds or they failed -- run provisioning */
+        temp_monitor_callbacks_t cb = {
+            .on_hibernate_enter = on_hibernate_enter,
+            .on_hibernate_exit  = on_hibernate_exit,
+        };
+        ESP_ERROR_CHECK(temp_monitor_start(&cb));
+
+        s_prov_done = xEventGroupCreate();
+        ESP_ERROR_CHECK(web_server_start(s_prov_done));
+
+        led_driver_set(LED_NETWORK, LED_STATE_BLUE_BLINKING);
+        xEventGroupWaitBits(s_prov_done, WEB_SERVER_PROV_DONE_BIT,
+                            pdFALSE, pdTRUE, portMAX_DELAY);
+        /* ... shutdown provisioning ... */
+    }
+
+    wifi_manager_stop_ap();
+    /* SNTP, then Phase 2 registration, then Phase 3+4 loop */
+    mqtt_reg_result_t r;
+    ESP_ERROR_CHECK(mqtt_manager_register(&r));
+    if (r == MQTT_REG_OK) mqtt_manager_run();
+}
+\end{lstlisting}
+
+Der Boot-Pfad ist sequentiell und blockierend: jede Phase wartet auf
+die vorherige. Die Reihenfolge der Initialisierungen ist wichtig ---
+\texttt{wifi\_manager\_init()} muss \emph{vor}
+\texttt{led\_driver\_init()} laufen, weil der WiFi-Stack kurz auf
+IO5 zugreift, das gleichzeitig LED2 Blau ist. \texttt{mqtt\_manager\_run()}
+am Ende blockiert für immer und führt die Phase~3/4-Schleife aus.
+
+\subsubsection{Re-Subscribe nach MQTT-Reconnect}
+
+\begin{lstlisting}[language=C, caption={Auszug aus
+\texttt{mqtt\_manager.c} --- automatisches Re-Subscribe bei Reconnect.}]
+case MQTT_EVENT_CONNECTED:
+    ESP_LOGI(TAG, "MQTT connected");
+    /* Re-subscribe to config topic after reconnect */
+    if (s_running) {
+        esp_mqtt_client_subscribe(s_client, s_topic_config_push, 1);
+        ESP_LOGI(TAG, "Re-subscribed to %s", s_topic_config_push);
+    }
+    xEventGroupSetBits(s_mqtt_events, EVT_CONNECTED);
+    break;
+\end{lstlisting}
+
+esp-mqtt verbindet sich nach Broker-Neustart automatisch wieder,
+doch die Abonnements gehen mit der Broker-Sitzung verloren. Der
+Hintergrund: ein MQTT-Abonnement ist Broker-seitiger Sitzungs-Zustand,
+kein Client-Zustand. Der Broker merkt sich \glqq Client~X ist auf
+Topic~Y abonniert\grqq{} nur für die Dauer der Session. Verbindet
+sich der Client mit \texttt{clean\_start=true} (Default in esp-mqtt)
+oder startet der Broker selbst neu (Mosquitto persistiert
+MQTT-Sessions per Default nicht), verwirft der Broker den gesamten
+Sitzungs-Zustand beim nächsten Connect. Der TCP-/MQTT-Handshake
+kommt zurück, die Abonnements aber nicht --- daher das
+Re-Subscribe in jedem \texttt{MQTT\_EVENT\_CONNECTED}.
+
+Das Flag \texttt{s\_running} sorgt dafür, dass während Phase~2
+(Registrierung) nicht doppelt subscribed wird --- erst in Phase~3+4
+ist \texttt{s\_running} aktiv und das Re-Subscribe greift.
+
+\subsubsection{Watering-Task pro Port}
+
+\begin{lstlisting}[language=C, caption={Auszug aus
+\texttt{mqtt\_manager.c} --- ein Task pro Pumpe für parallele Bewässerung.}]
+static void watering_task(void *arg)
+{
+    int port = (int)(uintptr_t)arg;     /* 1 oder 2 */
+    int idx = port - 1;
+    int pin = pump_gpio[idx];
+    watering_cmd_t cmd;
+
+    for (;;) {
+        if (xQueueReceive(s_watering_queue[idx], &cmd,
+                          portMAX_DELAY) != pdTRUE)
+            continue;
+
+        gpio_set_level(pin, 1);
+        portENTER_CRITICAL(&s_pump_mux);
+        s_active_pumps++;
+        portEXIT_CRITICAL(&s_pump_mux);
+        led_driver_set(LED_APPLICATION, LED_STATE_CYAN_BLINKING);
+        publish_watering_event(port, "watering_started",
+                               cmd.trigger, cmd.duration_s, NULL);
+
+        vTaskDelay(pdMS_TO_TICKS(cmd.duration_s * 1000));
+
+        gpio_set_level(pin, 0);
+        portENTER_CRITICAL(&s_pump_mux);
+        int remaining = --s_active_pumps;
+        portEXIT_CRITICAL(&s_pump_mux);
+        if (remaining == 0)
+            led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
+        publish_watering_event(port, "watering_stopped",
+                               cmd.trigger, cmd.duration_s,
+                               "duration_complete");
+    }
+}
+\end{lstlisting}
+
+Jeder Port hat einen eigenen Task und eine eigene Queue. Der globale
+\texttt{s\_active\_pumps}-Zähler (geschützt durch ein Spinlock) sorgt
+dafür, dass LED~2 erst dann zurück auf grün springt, wenn die letzte
+laufende Pumpe stoppt.
+
+\subsubsection{Idempotente Konfigurations-Anwendung}
+
+\begin{lstlisting}[language=C, caption={Auszug aus
+\texttt{mqtt\_manager.c} --- doppelte Konfigurationen werden erkannt.}]
+if (strcmp(pc->config_id, config_id) == 0) {
+    ESP_LOGI(TAG, "Config %s already applied (idempotent), "
+             "re-sending ack", config_id);
+    publish_config_ack(port, config_id, "applied", NULL);
+    led_driver_set(LED_APPLICATION, LED_STATE_GREEN_STEADY);
+    return;
+}
+
+nvs_manager_set_port_config(port, config_id, schedule_raw,
+                            humidity_pct, humidity_dur);
+strncpy(pc->config_id, config_id, sizeof(pc->config_id) - 1);
+pc->humidity_threshold_pct = humidity_pct;
+pc->humidity_duration_s = humidity_dur;
+parse_schedule(schedule_raw, pc);
+\end{lstlisting}
+
+QoS~1 garantiert at-least-once-Zustellung, kann also Duplikate erzeugen.
+Außerdem liefert der Broker beim Reconnect die letzte retained Message
+nochmals aus. Indem das Gerät die zuletzt angewandte
+\texttt{config\_id} im NVS speichert und vergleicht, wird die
+Konfiguration nicht doppelt geschrieben --- die Bestätigung wird aber
+trotzdem gesendet, damit der Server-Status korrekt bleibt.
+
+\subsubsection{ADC-Mapping für Feuchtigkeitssensor}
+
+\begin{lstlisting}[language=C, caption={Auszug aus
+\texttt{mqtt\_manager.c} --- ADC-Rohwert in Prozent umrechnen.}]
+static float read_humidity(adc_channel_t channel)
+{
+    int raw = 0;
+    adc_oneshot_read(s_adc_handle, channel, &raw);
+    /* Linear: 4095 -> 0% (dry), 0 -> 100% (wet) */
+    float pct = 100.0f * (1.0f - (float)raw / 4095.0f);
+    if (pct < 0.0f) pct = 0.0f;
+    if (pct > 100.0f) pct = 100.0f;
+    return pct;
+}
+\end{lstlisting}
+
+Die kapazitiven CSMS~v2.0(v1.2)-Sensoren liefern eine analoge Spannung,
+die mit zunehmender Trockenheit steigt. Der ADC-Rohwert (12~Bit,
+0--4095) wird linear umgekehrt und auf 0--100\,\% geclipt. Die
+Begrenzung verhindert, dass kleine Messabweichungen außerhalb des
+Sensorbereichs negative Prozentwerte liefern.
+
+\subsubsection{Server-seitiger Upsert bei Registrierung}
+
+\begin{lstlisting}[language=Python, caption={Auszug aus
+\texttt{server/app/handlers.py} --- Geräte-Registrierungs-Logik.}]
+async def handle_registration(client, device_id: str, payload: bytes):
+    data = json.loads(payload)
+    now = datetime.now(timezone.utc)
+    async with async_session() as session:
+        device = await session.get(Device, device_id)
+        if device is None:
+            device = Device(
+                device_id=device_id,
+                mac_address=data.get("mac_address", ""),
+                firmware_version=data.get("firmware_version", ""),
+                hardware_revision=data.get("hardware_revision", ""),
+                status="active",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            session.add(device)
+            status = "registered"
+        else:
+            device.firmware_version = data.get("firmware_version",
+                                               device.firmware_version)
+            device.last_seen_at = now
+            status = "already_registered"
+        await session.commit()
+    response = json.dumps({"status": status, ...})
+    await client.publish(f"greenbox/{device_id}/reg/response",
+                         response.encode(), qos=1)
+\end{lstlisting}
+
+Die Server-Logik nutzt einen einfachen Upsert: ist die
+\texttt{device\_id} unbekannt, wird ein neuer Datensatz angelegt;
+existiert das Gerät bereits, werden Firmware-Version und
+\texttt{last\_seen\_at} aktualisiert. Das Antwort-Status-Feld
+unterscheidet die beiden Fälle, sodass das Gerät bei einem
+``already\_registered'' wissen könnte, dass keine Erst-Provisionierung
+nötig ist.
+
+%% ---------------------------------------------------------------
+\section{Test \& Validierung}
+
+\subsection{Funktionsumfang}
+
+Das Gesamtsystem wurde während der Entwicklung in allen Phasen
+verifiziert:
+
+\begin{itemize}
+  \item \textbf{Phase~1} --- Hotspot-Provisionierung, automatisches
+        Wiederverbinden mit gespeicherten Zugangsdaten, MQTT-Broker
+        TCP-Probe, Übertemperaturschutz mit Hibernate-Fallback.
+  \item \textbf{Phase~2} --- MQTT-Registrierung, Server-seitiger
+        Upsert in der \texttt{devices}-Tabelle, korrekte Antwort an
+        das Gerät, exponentielles Backoff bei Verbindungsfehlern.
+  \item \textbf{Phase~3} --- Konfigurations-Push vom Device-Manager,
+        retained Message, Geräte-Validierung, idempotente Anwendung
+        gleicher \texttt{config\_id}, Persistenz im NVS, korrekte
+        Status-Übergänge in der Datenbank.
+  \item \textbf{Phase~4} --- Zeitgesteuerte und
+        Feuchtigkeits-getriggerte Bewässerung, parallele Pumpen-Tasks
+        pro Port, korrekte Telemetrie-Veröffentlichung an Mosquitto
+        und parallel direkt an den ThingsBoard-MQTT-Broker.
+  \item \textbf{Phase~5} --- Device-Viewer und Device-Manager,
+        REST-API-Aufrufe vom Frontend, automatisches Refresh alle
+        10\,s, ThingsBoard-Visualisierung.
+  \item \textbf{Sensor-Fehlertoleranz} --- ein abgezogener oder
+        kurzgeschlossener Feuchtigkeitssensor liefert eine
+        ADC-Schienen-Spannung (Rohwert 0 oder 4095, also 100\,\% bzw.\
+        0\,\% kartiert). Die Funktion \texttt{read\_humidity()} prüft
+        den Rückgabewert von \texttt{adc\_oneshot\_read}; ein harter
+        Lesefehler liefert das Sentinel \texttt{HUMIDITY\_INVALID}.
+        Zusätzlich zählt \texttt{update\_sensor\_health()} pro Port
+        aufeinanderfolgende Messungen am Schienenwert ($\le$0,5\,\%
+        oder $\ge$99,5\,\%); nach drei aufeinanderfolgenden
+        Minuten-Ticks (\texttt{SENSOR\_FAULT\_THRESHOLD}) gilt der
+        Sensor als defekt. Folge: Feuchtigkeits-getriggerte
+        Bewässerung wird für diesen Port unterdrückt
+        (Zeitplan-Bewässerung läuft unabhängig weiter), die
+        MQTT-Telemetrie meldet \texttt{null} statt eines irreführenden
+        Werts, und ein Log-Warnung "`Port~N sensor FAULTY"' macht den
+        Defekt sichtbar. Eine spätere plausible Messung setzt den
+        Fehler automatisch zurück.
+\end{itemize}
+
+\screenshot{screenshots/bootstrap-fault-tolerance.png}{Serielles Log
+eines vollständigen Boot-Zyklus: gespeicherte WiFi-Zugangsdaten,
+SNTP-Zeitsynchronisation, MQTT-Registrierung mit Fehlertoleranz für
+\texttt{already\_registered}, automatisches Re-Subscribe nach
+MQTT-Reconnect zum Device-Manager-Broker, Empfang einer
+Konfiguration und anschließende Bewässerung. Die roten Annotationen
+markieren die getesteten Fehlertoleranz-Pfade.}{0.95}
+
+\subsection{Aufgetretene Probleme und Lösungen}
+
+Während der Entwicklung wurden mehrere nicht offensichtliche
+Probleme identifiziert und behoben:
+
+\begin{itemize}
+  \item \textbf{IO5 als Strapping-Pin} --- die WiFi-Initialisierung
+        des ESP32 berührt IO5. Der LED-Treiber, der IO5 als reinen
+        Ausgang konfiguriert, störte daher den WiFi-Boot. \emph{Lösung:}
+        Reihenfolge in \texttt{app\_main} angepasst, sodass
+        \texttt{wifi\_manager\_init()} \emph{vor}
+        \texttt{led\_driver\_init()} läuft.
+  \item \textbf{MQTT-Reconnect ohne Re-Subscription} --- nach einem
+        Broker-Neustart verband sich die esp-mqtt-Library zwar wieder,
+        die ursprünglich abonnierten Topics gingen aber verloren.
+        \emph{Lösung:} im \texttt{MQTT\_EVENT\_CONNECTED}-Handler
+        wird \texttt{config/push} erneut abonniert, geschützt durch
+        ein \texttt{s\_running}-Flag.
+  \item \textbf{Bewässerung blockierte Timer-Service} ---
+        \texttt{do\_watering()} wurde direkt aus einem
+        FreeRTOS-Timer-Callback aufgerufen und nutzte
+        \texttt{vTaskDelay()}, was den Timer-Service-Task für die
+        Pumpdauer blockierte. Folge: MQTT-Keep-Alive lief ab.
+        \emph{Lösung:} Refaktorierung in zwei dedizierte
+        FreeRTOS-Tasks pro Port mit eigenen Queues; Timer-Callbacks
+        schicken nur Befehle.
+  \item \textbf{Netzwerk-Subnetz-Trennung} --- der ESP32 erhielt im
+        Gastnetzwerk eine 10.0.4.x-Adresse, der Broker lief auf
+        10.0.0.80. \emph{Lösung:} ESP32 mit dem Hauptnetz verbinden;
+        längerfristig dokumentieren, dass Geräte und Broker in
+        derselben Broadcast-Domäne sein müssen.
+  \item \textbf{LED-Lila im Hibernate erschien nicht} ---
+        \texttt{esp\_wifi\_stop()} setzt den GPIO-Mux einiger Pins
+        zurück, darunter IO5 (LED2 Blau). Wenn der LED-Lila-Befehl
+        \emph{vor} dem WiFi-Stopp gegeben wurde, ging der
+        Blau-Anteil sofort wieder verloren. \emph{Lösung:}
+        \texttt{led\_driver\_set(LED\_PURPLE)} \emph{nach}
+        \texttt{wifi\_manager\_stop()} aufrufen.
+  \item \textbf{DNS-Fehler-Indikator stimmte nicht mit Spec} ---
+        Die Spezifikation verlangte \texttt{red\_double\_blink},
+        der Code verwendete \texttt{red\_fast\_blink}. \emph{Lösung:}
+        Spec an den Code angepasst (das schnelle Blinken ist
+        leichter zu erkennen).
+  \item \textbf{MQTT-URI-Parser scheiterte an Leerzeichen} ---
+        Provisionierungs-Eingaben enthielten teils Whitespace
+        (Copy/Paste), was \texttt{mqtt:// 10.0.0.80:1883}
+        produzierte. \emph{Lösung:} JavaScript trimmt jeden
+        Eingabewert vor dem POST.
+  \item \textbf{Sequentielle statt parallele Bewässerung} ---
+        ursprünglich existierte nur eine globale Watering-Queue, sodass
+        Port~2 auf Port~1 wartete. \emph{Lösung:} pro Port eine
+        eigene Queue und ein eigener FreeRTOS-Task; ein
+        Active-Pump-Counter koordiniert die LED~2-Anzeige
+        zwischen den Tasks.
+  \item \textbf{Geheimes Datum für Configs nicht reproduzierbar} ---
+        ohne SNTP-Zeit lief das Gerät mit Epoche-Zeit, sodass
+        Schedule-Einträge ``06:00'' nie zur ESP32-Uhr passten.
+        \emph{Lösung:} SNTP-Synchronisation zwischen
+        WiFi-Verbindung und MQTT-Registrierung eingefügt.
+\end{itemize}
+
+%% ---------------------------------------------------------------
+\section{Fazit \& Ausblick}
+
+\subsection{Bewusst getroffene MVP-Entscheidungen}
+
+Während der Realisierung wurden mehrere Trade-offs dokumentiert und
+auf v2.0 verschoben, um die Lieferzeit für das MVP zu halten:
+
+\begin{itemize}
+  \item \textbf{Gehäuse}: Karton-Prototyp statt 3D-Druck. Schneller
+        iterierbar während der Entwicklung; ein FreeCAD-Modell und
+        ein 3D-gedrucktes Gehäuse sind v2.0-Ziele.
+  \item \textbf{LED-Steuerung}: binäre GPIO-Ausgabe pro R/G/B-Kanal
+        statt LEDC-PWM-Farbmodulation. Genügt für 7~unterscheidbare
+        Status-Farben; präzises Color-Mixing (z.B.\ echtes Orange
+        mit gedimmtem Grün) wäre v2.0.
+  \item \textbf{Pumpen-Treiber}: SS8050-NPN-Transistor statt MOSFET.
+        Erfüllt 150\,mA mit großer Reserve, kostengünstig, leicht
+        beschaffbar.
+  \item \textbf{MQTT-Authentifizierung}: Pre-Shared Key
+        (Klartext-Passwort) statt mTLS für den MVP. Der
+        Upgrade-Pfad über ESP-IDF \texttt{esp-tls} ist klar.
+  \item \textbf{Übertemperaturschutz}: simulierter
+        2-min/1-min-Zyklus statt echter Temperaturmessung --- der
+        ESP32-WROOM-32 hat keinen Temperatursensor auf der
+        MVP-Platine. Ein DS18B20 oder NTC ist eine v2.0-Erweiterung.
+  \item \textbf{Schedule-Limit}: 8~Zeitslots pro Port (statisches
+        Array). Slots darüber werden stillschweigend verworfen, statt
+        eine Validierungsmeldung zurückzugeben --- akzeptabel für
+        2~Bewässerungszyklen pro Tag.
+  \item \textbf{IoT-Dashboard}: jedes Gerät erhält seinen eigenen
+        ThingsBoard-Access-Token, der über das Provisionierungs-Formular
+        eingegeben und im NVS persistiert wird. Das Gerät baut zusätzlich
+        zur Mosquitto-Verbindung eine zweite MQTT-Verbindung zur
+        ThingsBoard-Broker-Instanz auf und publiziert die
+        Feuchtigkeits-Telemetrie direkt dorthin (\texttt{v1/devices/me/telemetry}).
+        Anders als ein zentraler Broker-Bridge hat dieser Ansatz den
+        Vorteil, dass jedes Gerät als eigene ThingsBoard-Entität
+        erscheint, ohne dass der Server Mosquitto-Konfigurationen
+        bei jeder Provisionierung neu erzeugen müsste.
+        Es wird angenommen, dass der ThingsBoard-Broker auf demselben
+        Host wie der Mosquitto-Broker läuft; um den Port-Konflikt
+        zwischen den beiden MQTT-Brokern (beide standardmäßig 1883)
+        zu vermeiden, wird der ThingsBoard-MQTT-Port im
+        \texttt{docker-compose.yml} auf Host-Port 1884 abgebildet.
+        Das vollautomatische Provisioning eines neuen Geräts in
+        ThingsBoard inklusive Token-Erzeugung über die Admin-API
+        bleibt v2.0-Aufgabe.
+  \item \textbf{Device-Viewer und Device-Manager}: Server-seitig
+        gerendertes HTML mit Jinja2 statt SPA-Framework. Kein
+        Build-Schritt, keine JS-Toolchain --- schneller deploy- und
+        änderbar für ein MVP.
+  \item \textbf{Watering-Stop-Reason}: nur \texttt{duration\_complete}
+        und \texttt{error} definiert. Trockenlauf-Erkennung
+        (Feuchtigkeit steigt nicht trotz Bewässerung) wäre
+        v2.0-Logik.
+  \item \textbf{Reset-Verhalten}: ``RST 5\,s halten'' löscht das
+        gesamte NVS. Ein granularer Reset (nur WiFi-Zugangsdaten,
+        nur Konfiguration) wäre v2.0.
+\end{itemize}
+
+\subsection{Identifizierte v2.0-Erweiterungen}
+
+\begin{itemize}
+  \item 3D-gedrucktes wasserfestes Gehäuse (FreeCAD, ABS oder PETG).
+  \item LEDC-PWM für sanftere Statusfarben und Helligkeitsstufen.
+  \item Echter Temperatursensor (DS18B20 oder NTC) für genauere
+        Übertemperaturerkennung statt zeitbasierte Simulation.
+  \item Konfigurierbares AP-Passwort (statt aus der MAC-Adresse
+        abgeleitet) --- Benutzer können dann ein eigenes Passwort
+        wählen, ohne den Aufkleber auf dem Gehäuse abzulesen.
+  \item mTLS für die MQTT-Verbindung mit pro-Gerät-Zertifikaten und
+        einer eigenen CA.
+  \item OTA-Updates über \texttt{esp\_https\_ota}.
+  \item Erweiterung auf $>$2 Bewässerungs-Ports (Schaltplan-Revision).
+  \item Trockenlauf- und Pumpenausfall-Schutz (Plausibilitätsprüfung
+        der Feuchtigkeit nach Bewässerung).
+  \item Push-Benachrichtigungen, z.B.\ via Telegram-Bot oder
+        \texttt{ntfy.sh}.
+  \item Historische Diagramme im Device-Manager mit Chart.js und
+        SQL-Aggregations-Queries (Tages-, Wochen-, Monatsansicht).
+  \item Mehrbenutzer-Authentifizierung mit Rollen (Owner, Viewer).
+  \item Mobile App (React Native oder Flutter) als Alternative zum
+        Device-Manager.
+  \item Automatisches ThingsBoard-Device-Provisioning: der Server
+        legt bei der Geräte-Registrierung über die ThingsBoard-Admin-API
+        ein neues Gerät an, holt dessen Access-Token ab und sendet
+        ihn als zusätzliches Feld in der Registrierungs-Antwort an die
+        GreenBox. Damit entfällt der manuelle Schritt im
+        Provisionierungs-Formular.
+  \item Konfigurierbarer ThingsBoard-MQTT-Host (zweites Feld im
+        Provisionierungs-Formular), damit Mosquitto und ThingsBoard
+        auf unterschiedlichen Maschinen laufen können.
+\end{itemize}
+
+\subsection{Reflexion der Gruppenarbeit}
+
+Das Projekt hat die gesamte Werkzeugkette eines cyber-physischen
+Systems abgedeckt --- vom Schaltplan über den Lötplatz bis zum
+Cloud-Dashboard. In nahezu jeder Disziplin musste neues Wissen
+erarbeitet werden.
+
+Auf der Hardware-Seite war der Entwurf des Schaltplans in
+\textbf{KiCad} die erste praktische Begegnung mit einer
+EDA-Software. Lerninhalte waren unter anderem die Notwendigkeit
+einer Freilaufdiode an den induktiven Pumpen (zum Schutz des
+SS8050-Transistors vor Abschalt-Spannungsspitzen), die
+Dimensionierung eines NPN-Transistors als Low-Side-Switch und das
+Verhalten von Strapping-Pins beim Boot-Vorgang des ESP32.
+Zusätzlich wurde \textbf{FreeCAD} evaluiert, um ein gedrucktes
+Gehäuse vorzubereiten; im gemeinsam getroffenen Abwägungs-Schritt
+fiel die Entscheidung jedoch bewusst auf einen Pappkarton-Prototyp,
+um beim Iterieren schneller zu sein. Das CAD-Modell bleibt ein
+konkretes v2.0-Ziel.
+
+Auf der Firmware-Seite wurde die Arbeit mit dem ESP-IDF,
+dem komponentenbasierten Build-System, FreeRTOS-Tasks und -Queues
+sowie dem persistenten Schlüsselwert-Speicher (NVS) erlernt.
+Die Implementierung des MQTT-Protokolls --- inklusive
+\texttt{retained} Messages, QoS-Stufen und Re-Subscribe nach
+Broker-Neustart --- war der erste praktische Kontakt mit einem
+Pub/Sub-Protokoll. Auf der Server-Seite wurde das gesamte
+Backend-Design eigenständig entworfen: REST-API mit FastAPI,
+asynchrone PostgreSQL-Zugriffe, idempotente
+Konfigurations-Anwendung über \texttt{config\_id}, ein
+Audit-Trail-Schema mit \texttt{pending} $\to$ \texttt{pushed} $\to$
+\texttt{applied} und ein Jinja2-gerendertes Frontend.
+\textbf{ThingsBoard} kam später als Bonus dazu und zeigte, dass ein
+Cloud-Dashboard nicht zwingend selbst gebaut werden muss --- wenn
+das Datenmodell stimmt, genügen ein paar Zeilen JSON auf einem
+zweiten MQTT-Topic.
+
+Übergreifend war die wichtigste methodische Lektion, dass
+MVP-Entscheidungen sauber dokumentiert werden müssen, statt sie zu
+verstecken: das Kapitel "`Bewusst getroffene MVP-Entscheidungen"'
+war dabei mindestens so lehrreich wie der Code selbst. Auch das
+Schreiben dieses Dokuments in \LaTeX{} mit PlantUML-Sequenz- und
+Komponenten-Diagrammen war größtenteils Neuland.
+
+Hinsichtlich der Gruppenarbeit wurden die zentralen
+Design-Entscheidungen --- Architektur, Hardware-Auswahl, MVP-Scope
+und v2.0-Roadmap --- gemeinsam getroffen.
+
 %% ===============================================================
 \appendix
 \newpage
-\section{Diagrams}
+\section{Diagramme}
 
 \begin{figure}[ht]
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/global-sequence.png}
-  \caption{GreenBox global sequence --- top-level orchestration.}
+  \caption{GreenBox-Globalsequenz --- Top-Level-Orchestrierung.}
   \label{fig:global-sequence}
 \end{figure}
 
@@ -615,15 +1399,23 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/component-diagram.png}
-  \caption{System component diagram --- architecture overview.}
+  \caption{System-Komponenten-Diagramm --- Architekturübersicht.}
   \label{fig:component}
 \end{figure}
 
 \begin{figure}[p]
 \thisfloatpagestyle{plain}
   \centering
+  \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/pap-main-flow.png}
+  \caption{Programmablaufplan (PAP) der Firmware-Hauptschleife.}
+  \label{fig:pap}
+\end{figure}
+
+\begin{figure}[p]
+\thisfloatpagestyle{plain}
+  \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/er-diagram.png}
-  \caption{Entity relationship diagram --- full database schema.}
+  \caption{Entity-Relationship-Diagramm --- vollständiges Datenbankschema.}
   \label{fig:er}
 \end{figure}
 
@@ -633,7 +1425,7 @@ Cyan blinking           & 500\,ms \\
   \vspace*{\fill}
   \centering
   \includegraphics[width=\linewidth, height=0.90\textheight, keepaspectratio]{docs_bin/mqtt-interfaces.png}
-  \captionof{figure}{MQTT message interface definitions.}
+  \captionof{figure}{MQTT-Schnittstellen-Definitionen.}
   \label{fig:mqtt-interfaces}
   \vspace*{\fill}
 \end{landscape}
@@ -643,7 +1435,7 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase1-wifi-setup.png}
-  \caption{Phase~1 --- WiFi and MQTT broker configuration sequence.}
+  \caption{Phase~1 --- Sequenz der WiFi- und MQTT-Broker-Konfiguration.}
   \label{fig:phase1}
 \end{figure}
 
@@ -651,7 +1443,7 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase2-mqtt-registration.png}
-  \caption{Phase~2 --- MQTT registration sequence.}
+  \caption{Phase~2 --- MQTT-Registrierungs-Sequenz.}
   \label{fig:phase2}
 \end{figure}
 
@@ -659,7 +1451,7 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase3-config-protocol.png}
-  \caption{Phase~3 --- Configuration protocol sequence.}
+  \caption{Phase~3 --- Konfigurationsprotokoll-Sequenz.}
   \label{fig:phase3}
 \end{figure}
 
@@ -667,7 +1459,7 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase4-watering-events.png}
-  \caption{Phase~4 --- Watering event reporting sequence.}
+  \caption{Phase~4 --- Bewässerungs-Event-Reporting-Sequenz.}
   \label{fig:phase4}
 \end{figure}
 
@@ -675,7 +1467,7 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/phase5-user-data-viewing.png}
-  \caption{Phase~5 --- User data viewing sequence.}
+  \caption{Phase~5 --- Sequenz der Benutzer-Datenansicht.}
   \label{fig:phase5}
 \end{figure}
 
@@ -683,10 +1475,47 @@ Cyan blinking           & 500\,ms \\
 \thisfloatpagestyle{plain}
   \centering
   \includegraphics[width=\textwidth, height=\textheight, keepaspectratio]{docs_bin/led-states.png}
-  \caption{RGB LED state diagram --- LED~1 (Network) and LED~2 (Application).}
+  \caption{RGB-LED-Zustandsdiagramm --- LED~1 (Netzwerk) und LED~2 (Anwendung).}
   \label{fig:led-states}
 \end{figure}
 
 \restoregeometry
+
+\newpage
+\section{Vollständiger Quellcode}
+
+Der vollständige Quellcode steht auf zwei Wegen zur Verfügung ---
+welcher zugänglicher ist, hängt vom verwendeten PDF-Reader ab:
+
+\begin{enumerate}
+  \item \textbf{Online-Repository (anklickbar):}\\
+        \url{https://github.com/Green0wl/green-box}\\
+        Enthält den exakt gleichen Stand wie das beigefügte ZIP.
+        Direkter Zugriff im Browser, ohne PDF-Anhang-Extraktion.
+  \item \textbf{ZIP-Anhang dieses PDF:} Die meisten PDF-Reader
+        (z.B.\ Adobe Acrobat, Okular, Evince) zeigen Anhänge in einem
+        Seitenmenü an und ermöglichen das Extrahieren.
+\end{enumerate}
+
+Inhalt von Repository und Archiv:
+\begin{itemize}
+  \item \texttt{gb-src/} --- ESP-IDF-Firmware (alle Komponenten,
+        Hauptanwendung)
+  \item \texttt{server/} --- Python/FastAPI-Anwendungsserver, Templates,
+        Dockerfile, SQL-Initialisierung
+  \item \texttt{broker/} --- Mosquitto-Konfiguration, ACL, Passwortdatei
+  \item \texttt{schematic/} --- KiCad-Projekt und PDF-Export
+  \item \texttt{docs/} --- LaTeX-Quellen, PlantUML-Diagramme,
+        Makefile
+  \item \texttt{docker-compose.yml} --- Top-Level-Stack-Definition
+\end{itemize}
+
+\IfFileExists{green-box-source.zip}{%
+  \embedfile[desc={GreenBox source code archive}]{green-box-source.zip}%
+  \noindent\textit{Anhang verfügbar:} \texttt{green-box-source.zip}
+}{%
+  \noindent\textit{(Quellcode-Archiv wird vor der finalen Abgabe als
+  \texttt{docs/green-box-source.zip} bereitgestellt.)}
+}
 
 \end{document}

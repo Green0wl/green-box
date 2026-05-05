@@ -1,0 +1,82 @@
+@startuml
+
+title GreenBox — Programmablaufplan (PAP) der Firmware-Hauptschleife
+
+skinparam ActivityBackgroundColor #F5F5F5
+skinparam ActivityBorderColor #333333
+skinparam ActivityDiamondBackgroundColor #E3F2FD
+
+start
+:NVS initialisieren;
+:WiFi initialisieren\n(APSTA-Modus);
+:LED-Treiber initialisieren;
+:RST-Tasten-Monitor starten\n(Hintergrund-Task, GPIO12);
+
+:WiFi-Zugangsdaten aus NVS lesen;
+
+if (Zugangsdaten vorhanden?) then (ja)
+  :LED 1 = rot blinkend\n(Verbindungsversuch);
+  :STA-Verbindung versuchen\n(Timeout 15 s);
+  if (Verbindung erfolgreich?) then (ja)
+    :LED 1 = grün\n(verbunden);
+  else (nein)
+    :LED 1 = aus;
+    :Provisionierungs-AP starten;
+  endif
+else (nein)
+  :Übertemperatur-Monitor starten\n(Hintergrund);
+  :Provisionierungs-Webserver starten;
+  :LED 1 = blau blinkend\n(AP wartet auf Benutzer);
+  :Auf Provisionierungs-Event\nwarten (Benutzer sendet Formular);
+  :Übertemperatur-Monitor stoppen;
+  :Webserver stoppen;
+endif
+
+:Soft-AP deaktivieren;
+
+:SNTP-Zeitsynchronisation\n(pool.ntp.org, max 15 s);
+
+repeat :MQTT-Registrierung\n(Phase 2, max 10 Versuche);
+backward :Backoff (1s..60s);
+repeat while (registriert?) is (nein)
+->ja;
+
+:Pumpen-GPIOs initialisieren\n(IO2, IO25, default LOW);
+:ADC für H1, H2 initialisieren;
+:Watering-Tasks (2x) starten\nje eine Queue pro Port;
+:Gespeicherte Konfiguration\naus NVS laden;
+:config/push abonnieren;
+
+fork
+  while (immer)
+    :30 s warten;
+    :Aktuelle UTC-Zeit prüfen;
+    if (Zeitslot trifft\nund nicht in dieser Minute\nschon ausgelöst?) then (ja)
+      :Watering-Befehl in Queue\ndes betroffenen Ports;
+    else (nein)
+    endif
+  endwhile
+fork again
+  while (immer)
+    :60 s warten;
+    :Feuchtigkeit lesen;
+    if (Feuchte < Schwelle?) then (ja)
+      :Watering-Befehl in Queue;
+    else (nein)
+    endif
+  endwhile
+fork again
+  while (immer)
+    :30 s warten;
+    :Feuchtigkeits-Telemetrie\nüber MQTT senden\n(event/humidity);
+  endwhile
+fork again
+  while (immer)
+    :Auf config/push warten;
+    :Validieren, in NVS speichern,\nack senden,\nWatering-Timer aktualisieren;
+  endwhile
+end fork
+
+stop
+
+@enduml

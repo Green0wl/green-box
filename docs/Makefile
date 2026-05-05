@@ -1,6 +1,7 @@
-PUML_SRC  := $(wildcard *.puml)
-SVG_OUT   := $(patsubst %.puml,docs_bin/%.svg,$(PUML_SRC))
-PNG_OUT   := $(patsubst %.puml,docs_bin/%.png,$(PUML_SRC))
+PUML_SRC      := $(wildcard *.puml)
+SVG_OUT       := $(patsubst %.puml,docs_bin/%.svg,$(PUML_SRC))
+PNG_OUT       := $(patsubst %.puml,docs_bin/%.png,$(PUML_SRC))
+SUBMISSION_PDF := docs_bin/Gruppe_GreenBox_ITM24-2.pdf
 
 .PHONY: all docs pdf clean
 
@@ -23,6 +24,7 @@ docs_bin/nobg-light-logo.png: ../static/nobg-light-logo.svg | docs_bin
 pdf: docs $(PNG_OUT) docs_bin/nobg-light-logo.png
 	pdflatex -output-directory=docs_bin greenbox-docs.tex
 	pdflatex -output-directory=docs_bin greenbox-docs.tex
+	cp docs_bin/greenbox-docs.pdf $(SUBMISSION_PDF)
 
 clean:
 	rm -rf docs_bin/*

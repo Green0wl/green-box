@@ -1,3 +1,13 @@
+/*
+ * Overheat / hibernate simulator.
+ *
+ * The MVP PCB has no real temperature sensor, so we simulate the cycle
+ * defined in the LED state diagram with fixed timers: NORMAL_PERIOD_MS of
+ * normal operation, then HIBERNATE_PERIOD_MS where callbacks shut WiFi and
+ * the HTTP server down (LED 2 = purple). On exit, the callbacks restart
+ * those services. v2.0 will replace this with a DS18B20 reading.
+ */
+
 #include "temp_monitor.h"
 #include "led_driver.h"
 #include "esp_log.h"

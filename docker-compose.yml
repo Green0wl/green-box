@@ -35,5 +35,18 @@ services:
       - mosquitto
       - postgres
 
+  thingsboard:
+    image: thingsboard/tb-postgres:latest
+    ports:
+      - "9090:9090"   # web UI / HTTP API (HTTP_BIND_PORT=9090)
+      - "1884:1883"   # MQTT (host 1884 → container 1883, avoids Mosquitto clash)
+    environment:
+      TB_QUEUE_TYPE: in-memory
+    volumes:
+      - thingsboard-data:/data
+      - thingsboard-logs:/var/log/thingsboard
+
 volumes:
   postgres-data:
+  thingsboard-data:
+  thingsboard-logs:

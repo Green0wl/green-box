@@ -63,18 +63,21 @@ node "Cloud Infrastructure" {
   [Application\nServer] as SERVER
   database "PostgreSQL\nTCP :5432" as DB
   [Web Frontend\n(SPA)] as WEB
+  [ThingsBoard CE\nMQTT :1884\nWeb UI :9090] as TB
 }
 
 actor "User" as USER
 
 WIFIMGR <--> WIFI : WiFi STA\n(802.11ac)
 WIFI <--> BROKER : TCP :1883\n(plain MQTT 5.0)
+WIFI <--> TB : TCP :1884\n(plain MQTT 5.0,\ntoken from NVS)
 
 BROKER <--> SERVER : MQTT\npub / sub
 SERVER <--> DB : SQL queries
 WEB <--> SERVER : REST API\n(HTTPS)
 USER <--> WEB : Browser\n(HTTPS)
 USER <--> ESPWEB : Browser\n(HTTP, local network)
+USER <--> TB : Browser\n(HTTPS, dashboard)
 
 note bottom of BROKER
   Topics:

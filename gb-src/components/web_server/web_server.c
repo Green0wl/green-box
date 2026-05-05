@@ -1,3 +1,15 @@
+/*
+ * Provisioning HTTP server (port 80).
+ *
+ * Active only during Phase 1, before the device has WAN connectivity. The
+ * embedded HTML form (provisioning.html) is served as the index; the user's
+ * POST to /connect drives wifi_manager + nvs_manager + a TCP probe to the
+ * MQTT broker before signalling app_main via an event group.
+ *
+ * GET /status reports the temperature monitor's hibernate flag so the
+ * frontend can disable the form during overheat.
+ */
+
 #include "web_server.h"
 #include "wifi_manager.h"
 #include "nvs_manager.h"
@@ -91,6 +103,12 @@ static esp_err_t get_root_handler(httpd_req_t *req)
     return httpd_resp_send(req, (const char *)provisioning_html_start, len);
 }
 
+/*
+ * TCP-probe the MQTT broker before declaring provisioning successful. We
+ * deliberately do this from the device side so the user gets immediate
+ * feedback if they typed a wrong host/port — much better UX than failing
+ * later in the MQTT registration retry loop.
+ */
 static bool check_mqtt_reachable(const char *host, uint16_t port)
 {
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
@@ -133,6 +151,15 @@ static esp_err_t get_status_handler(httpd_req_t *req)
     return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
 }
 
+/*
+ * POST /connect — the heart of provisioning.
+ *  1. Refuse if the device is in hibernate (overheat).
+ *  2. Parse SSID, password, MQTT host/port from the urlencoded body.
+ *  3. Persist to NVS so reboots don't require re-provisioning.
+ *  4. Try the WiFi connection (blocks ~15 s).
+ *  5. On WiFi success, TCP-probe the MQTT broker.
+ *  6. On full success, signal app_main via the event group.
+ */
 static esp_err_t post_connect_handler(httpd_req_t *req)
 {
     if (temp_monitor_is_hibernating()) {
@@ -153,6 +180,7 @@ static esp_err_t post_connect_handler(httpd_req_t *req)
     char password[65] = {0};
     char mqtt_host[128] = {0};
     char mqtt_port_str[6] = {0};
+    char tb_token[64] = {0};   /* optional, may stay empty */
 
     if (!get_form_field(buf, "ssid", ssid, sizeof(ssid)) ||
         !get_form_field(buf, "password", password, sizeof(password)) ||
@@ -162,11 +190,15 @@ static esp_err_t post_connect_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    /* Optional: ThingsBoard access token (cloud telemetry off if empty) */
+    get_form_field(buf, "tb_token", tb_token, sizeof(tb_token));
+
     uint16_t mqtt_port = (uint16_t)atoi(mqtt_port_str);
 
     /* Store in NVS */
     nvs_manager_set_wifi(ssid, password);
     nvs_manager_set_mqtt(mqtt_host, mqtt_port);
+    nvs_manager_set_tb_token(tb_token);
 
     /* LED: connecting */
     led_driver_set(LED_NETWORK, LED_STATE_RED_BLINKING);
