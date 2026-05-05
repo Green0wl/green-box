@@ -13,6 +13,7 @@
 \usepackage{listings}
 \usepackage{embedfile}
 \usepackage{hyperref}
+\usepackage{hypgotoe}
 
 % Code listings — language-aware syntax styling, line numbers, breakable
 \definecolor{codebg}{RGB}{248,248,242}
@@ -1538,8 +1539,12 @@ Inhalt von Repository und Archiv:
 \end{itemize}
 
 \IfFileExists{green-box-source.zip}{%
-  \embedfile[desc={GreenBox source code archive}]{green-box-source.zip}%
-  \noindent\textit{Anhang verfügbar:} \texttt{green-box-source.zip}
+  %% Document-level attachment so the zip appears in the reader's
+  %% Attachments / paperclip panel.
+  \embedfile[desc={GreenBox source code archive},%
+             mimetype=application/zip]{green-box-source.zip}%
+  \noindent Quellcode-Archiv:
+  \href{gotoe:embedded=green-box-source.zip}{\texttt{green-box-source.zip}}.
 }{%
   \noindent\textit{(Quellcode-Archiv wird vor der finalen Abgabe als
   \texttt{docs/green-box-source.zip} bereitgestellt.)}

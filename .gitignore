@@ -3,6 +3,7 @@ docs/docs_bin/
 gb-src/build/
 gb-src/managed_components/
 gb-src/.cache/
+docs/green-box-source.zip
 
 # Editor swap files
 *.swp
