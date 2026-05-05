@@ -224,6 +224,7 @@ Die wichtigsten Peripheriebausteine:
 \end{itemize}
 
 \subsubsection{GPIO-Belegung}
+\label{sec:gpio}
 
 \begin{center}
 \begin{tabular}{llll}
@@ -297,6 +298,32 @@ Feuchtigkeits-Schwellwert-Prüfung, Telemetrie-Versand).
 
 %% ---------------------------------------------------------------
 \section{Realisierung}
+
+\subsection{Schaltplan}
+\label{sec:schaltplan}
+
+Der vollständige Platinen-Schaltplan der GreenBox (Rev~1/1, KiCad~9.0.8)
+ist als ganzseitige Landscape-Abbildung direkt nach dem
+Inhaltsverzeichnis dieses Dokuments enthalten ---
+siehe Abbildung~\ref{fig:schematic}. Der Schaltplan zeigt:
+
+\begin{itemize}
+  \item das ESP32-WROOM-32-Modul mit allen verwendeten GPIO-Anschlüssen
+        (vgl.\ Tabelle GPIO-Belegung in Abschnitt~\ref{sec:gpio}),
+  \item die beiden Pumpen-Treiberstufen mit
+        SS8050-NPN-Transistoren (Q1, Q2), 1\,k$\Omega$
+        Basis-Vorwiderständen (R1, R9) und Freilaufdioden (D3, D4)
+        gegen Abschalt-Spannungsspitzen,
+  \item die zwei kapazitiven Bodenfeuchtigkeitssensoren CSMS~v2.0 (H1, H2)
+        an ADC1\_CH4 und ADC1\_CH5,
+  \item die zwei RGB-LEDs (D1, D2) mit Vorwiderständen,
+  \item den RST-Taster mit Pulldown an IO12,
+  \item die parallele 5\,V-Versorgung der Pumpen direkt vom
+        5\,V-Ausgang des ESP32-Boards (gemeinsame GND).
+\end{itemize}
+
+Eine PDF-Export-Datei \texttt{schematic/green-box-schematic.pdf}
+liegt im Quellcode-Repository.
 
 \subsection{Firmware-Architektur}
 
