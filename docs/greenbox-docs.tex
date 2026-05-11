@@ -6,6 +6,7 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{caption}
+\usepackage{subcaption}
 \usepackage{floatpag}
 \usepackage{placeins}
 \usepackage{pdflscape}
@@ -84,6 +85,47 @@
   \label{fig:schematic}
 \end{landscape}
 \restoregeometry
+
+%% ---- Photos of the assembled cardboard housing ----
+%% Portrait layout: three rows, each with the photo on the left and
+%% its description text on the right.
+\begin{figure}[p]
+  \centering
+  \begin{minipage}[c]{0.52\textwidth}
+    \includegraphics[width=\linewidth, keepaspectratio]{screenshots/box-top.jpeg}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.44\textwidth}
+    \textbf{(a) Draufsicht.} Pappkarton-Prototyp mit Logo. Beide
+    RGB-Status-LEDs an der Frontseite sichtbar, die zwei externen
+    kapazitiven Bodenfeuchtigkeitssensoren (CSMS~v1.2) und die beiden
+    Pumpen rechts vom Gehäuse.
+  \end{minipage}\\[1.2em]
+
+  \begin{minipage}[c]{0.52\textwidth}
+    \includegraphics[width=\linewidth, keepaspectratio]{screenshots/box-front.jpeg}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.44\textwidth}
+    \textbf{(b) Frontseite} (28\,cm $\times$ 9\,cm). LED~2
+    ``Application Status'' und LED~1 ``Network Status'' (beide
+    grün-dauerhaft: WiFi verbunden, MQTT-Session aktiv),
+    Hard-Reset-Taster rechts, die zwei Humidity-Anschlüsse für die
+    externen Feuchtigkeitssensoren H1 und H2.
+  \end{minipage}\\[1.2em]
+
+  \begin{minipage}[c]{0.52\textwidth}
+    \includegraphics[width=\linewidth, keepaspectratio]{screenshots/box-right.jpeg}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.44\textwidth}
+    \textbf{(c) Seitenansicht} (18\,cm Tiefe). Die beiden
+    Pumpen-Anschlüsse P1 und P2 mit Polaritätskennzeichnung; jede
+    Pumpe wird über einen SS8050-Transistor vom ESP32-GPIO geschaltet.
+  \end{minipage}
+
+  \caption{GreenBox-Gehäuse --- Pappkarton-Prototyp:
+  (a) Draufsicht, (b) Frontseite, (c) Seitenansicht.}
+  \label{fig:box}
+\end{figure}
+\FloatBarrier
 
 %% ---------------------------------------------------------------
 \section{Einleitung \& Idee}
