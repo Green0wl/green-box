@@ -1,6 +1,6 @@
 @startuml
 
-title GreenBox — Entity Relationship Diagram
+title GreenBox — Datenbankmodell
 
 skinparam class {
   BackgroundColor #FFFDE7
@@ -36,10 +36,10 @@ entity "device_configs" as configs {
   --
   port IN (1, 2)
   humidity_threshold_pct 0..100
-  status IN ('pending', 'pushed',
+  status IN ('pending', 'pushed',\
     'applied', 'rejected')
   watering_schedule format:
-    [{"time":"HH:MM",
+    [{"time":"HH:MM",\
       "duration_s": int}, ...]
 }
 
@@ -60,7 +60,7 @@ entity "watering_events" as watering {
   stop_reason : VARCHAR(30)
   --
   port IN (1, 2)
-  event_type IN ('watering_started',
+  event_type IN ('watering_started',\
     'watering_stopped')
   trigger IN ('schedule', 'humidity')
   stop_reason IN ('duration_complete', 'error')

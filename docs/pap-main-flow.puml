@@ -21,7 +21,12 @@ if (Zugangsdaten vorhanden?) then (ja)
     :LED 1 = grün\n(verbunden);
   else (nein)
     :LED 1 = aus;
-    :Provisionierungs-AP starten;
+    :Übertemperatur-Monitor starten\n(Hintergrund);
+    :Provisionierungs-Webserver starten;
+    :LED 1 = blau blinkend\n(AP wartet auf Benutzer);
+    :Auf Provisionierungs-Event\nwarten (Benutzer sendet Formular);
+    :Übertemperatur-Monitor stoppen;
+    :Webserver stoppen;
   endif
 else (nein)
   :Übertemperatur-Monitor starten\n(Hintergrund);
