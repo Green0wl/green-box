@@ -7,6 +7,7 @@
 \usepackage{graphicx}
 \usepackage{caption}
 \usepackage{subcaption}
+\usepackage{tabularx}
 \usepackage{floatpag}
 \usepackage{placeins}
 \usepackage{pdflscape}
@@ -230,7 +231,43 @@ Die GreenBox-Platine (Rev~1/1, KiCad~9.0.8) basiert auf einem
 ESP32-WROOM-32-Modul. Der Schaltplan befindet sich im Verzeichnis
 \texttt{schematic/} und ist als ganzseitige Abbildung am Anfang dieses
 Dokuments enthalten (siehe Abbildung~\ref{fig:schematic}).
-Die wichtigsten Peripheriebausteine:
+
+\renewcommand{\arraystretch}{1.15}
+\begin{center}
+\begin{tabularx}{\textwidth}{rXX}
+\hline
+\textbf{Anzahl} & \textbf{Komponente} & \textbf{Funktion / Anmerkung} \\
+\hline
+1 & ESP32-WROOM-32 Dev-Board                       & Mikrocontroller, WiFi, ADC, GPIO \\
+2 & CSMS v1.2 (kapazitiver Bodenfeuchtigkeitssensor) & Eingabe (ADC1\_CH4, ADC1\_CH5) \\
+2 & DC-Mini-Wasserpumpe (5\,V, 150\,mA)            & Aktor: Bewässerung pro Port \\
+2 & SS8050-NPN-Transistor (Q1, Q2)                 & Low-Side-Switch für die Pumpen \\
+  2 & Freilaufdiode (ersetzt mit LEDs) (D3, D4)    & Schutz gegen Abschalt-Spannungsspitzen \\
+2 & RGB-LED gemeinsame Kathode (D1, D2)            & Status: Netzwerk, Anwendung \\
+6 & 220\,$\Omega$-Widerstand                       & Vorwiderstand pro LED-Farbkanal \\
+2 & 1\,k$\Omega$-Widerstand (R1, R9)               & Basis-Vorwiderstand SS8050 \\
+2 & 10\,k$\Omega$-Widerstand                       & Pulldown für Pumpen-GPIO \\
+1 & Drucktaster (SW1)                              & Hard-Reset / NVS-Löschen \\
+1 & 1\,k$\Omega$-Widerstand (R12)                  & Reihenwiderstand für RST-Taster \\
+1 & 10\,k$\Omega$-Widerstand (R11)                 & Pulldown für RST-Taster \\
+$\sim$30 & Jumper-Kabel (M-M, M-W)                 & Verdrahtung Steckbrett \\
+1 & Pappkarton (28\,$\times$\,18\,$\times$\,9\,cm) & Gehäuse-Prototyp \\
+1 & USB-C-Kabel                                    & Stromversorgung + Programmierung des ESP32 \\
+1 & Laptop (PC)                                    & ESP-IDF-Build, Server-Stack via Docker \\
+\hline
+\multicolumn{3}{l}{\textit{Werkzeug \& Hilfsmittel beim Zusammenbau}} \\
+\hline
+1 & Heißklebepistole + Klebesticks                 & Fixierung der Komponenten im Pappkarton \\
+1 & Alleskleber                                    & Verkleben von Pappteilen und Beschriftungen \\
+4 & Blatt Papier (A4)                              & Ausdruck der Beschriftungen für das Gehäuse \\
+1 & Drucker                                        & Ausgabe der Beschriftungen \\
+1 & Multimeter                                     & Durchgangs- und Spannungsmessung beim Aufbau \\
+1 & Lötkolben + Lötzubehör                         & Lötzinn, Schwamm, Lötstütze --- für die Drahtverbindungen \\
+\hline
+\end{tabularx}
+\end{center}
+
+\noindent Die wichtigsten Peripheriebausteine im Detail:
 
 \begin{itemize}
   \item \textbf{Bodenfeuchtigkeitssensoren} --- zwei kapazitive Sensoren
